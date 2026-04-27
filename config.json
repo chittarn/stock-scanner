@@ -1,0 +1,27 @@
+{
+    "universe": [
+        "NVDA",
+        "MSFT",
+        "QQQ",
+        "AMZN",
+        "SMH",
+        "CAT",
+        "XLE",
+        "WMT",
+        "GLD"
+    ],
+    "initial_capital": 300.0,
+    "ma_period": 200,
+    "atr_period": 14,
+    "atr_mult": 2.5,
+    "my_holdings": {
+        "SMH": {
+            "qty": 0.341783,
+            "avg_cost": 495.87
+        },
+        "CAT": {
+            "qty": 0.206997,
+            "avg_cost": 822.09
+        }
+    }
+}

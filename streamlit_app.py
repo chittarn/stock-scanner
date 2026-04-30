@@ -87,25 +87,44 @@ with tab1:
         sorted_tickers = sorted(data['scores'].items(), key=lambda x: x[1]['score'], reverse=True)
         top_4 = [t for t, _ in sorted_tickers[:4]]
         
-        actions = []
         if data['regime'] == "BEAR":
-            st.error("🚨 SELL EVERYTHING")
+            st.error("🚨 SELL EVERYTHING - Market in BEAR Regime")
         else:
             # Check Sells
+            to_sell = []
             for t, h in engine.config['my_holdings'].items():
                 if h['qty'] <= 0: continue
                 pnl = (data['prices'][t].iloc[-1] / h['avg_cost'] - 1) * 100
-                if pnl < -7: st.error(f"SELL {t} (Stop Loss)")
-                elif t not in top_4: st.warning(f"SELL {t} (Dropped Rank)")
+                
+                if pnl < -7: 
+                    to_sell.append(t)
+                    st.error(f"🔴 SELL ALL {t} (Stop Loss: {pnl:.1f}%)")
+                elif t not in top_4: 
+                    to_sell.append(t)
+                    st.warning(f"🟠 SELL ALL {t} (Dropped Rank)")
+                elif not data['scores'][t]['above_ma200']:
+                    to_sell.append(t)
+                    st.warning(f"🟠 SELL ALL {t} (Below 200 SMA)")
+            
+            if to_sell:
+                st.caption("Use the cash from your sells to fund the BUY orders below.")
             
             # Check Buys
             target_per = max(total_val, engine.config['initial_capital']) / n_target if n_target > 0 else 0
-            for t_rank in sorted_tickers[:n_target]:
+            buy_candidates = [t for t in sorted_tickers if t[0] not in to_sell][:n_target]
+            
+            for t_rank in buy_candidates:
                 ticker = t_rank[0]
-                if ticker not in engine.config['my_holdings']:
-                    st.success(f"BUY {ticker} (${target_per:.0f})")
-                else:
-                    st.info(f"HOLD {ticker}")
+                is_held = ticker in engine.config['my_holdings'] and engine.config['my_holdings'][ticker].get('qty', 0) > 0
+                curr_val = engine.config['my_holdings'][ticker].get('qty', 0) * data['prices'][ticker].iloc[-1] if is_held else 0
+                diff = target_per - curr_val
+                
+                if not is_held:
+                    st.success(f"🟢 BUY (New Entry) **{ticker}**: ${target_per:.2f}")
+                elif diff > max(5.0, target_per * 0.10):
+                    st.success(f"🟢 BUY (Add) **{ticker}**: ${diff:.2f}")
+                elif is_held:
+                    st.info(f"🔵 HOLD **{ticker}** (Val: ${curr_val:.2f})")
 
 with tab2:
     st.subheader("🏆 Momentum Rankings")

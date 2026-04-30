@@ -16,12 +16,12 @@
     "atr_mult": 2.5,
     "my_holdings": {
         "SMH": {
-            "qty": 0.341783,
-            "avg_cost": 495.87
+            "qty": 0.34178297,
+            "avg_cost": 497.16
         },
         "CAT": {
-            "qty": 0.206997,
-            "avg_cost": 822.09
+            "qty": 0.20699735,
+            "avg_cost": 822.81
         }
     }
 }

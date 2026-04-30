@@ -129,23 +129,32 @@ class CLIScanner:
         if data['regime'] == "BEAR":
             action_panel.append("[bold red]ACTION: SELL EVERYTHING - MARKET IN BEAR REGIME[/bold red]")
         else:
+            to_sell_tickers = [s['ticker'] for s in to_sell]
+
             if to_sell:
-                action_panel.append("[bold red]SELL ORDERS:[/bold red]")
+                action_panel.append("[bold red]SELL ORDERS (Execute Immediately):[/bold red]")
                 for s in to_sell:
-                    action_panel.append(f" - {s['ticker']}: {s['qty']:.4f} shares ({s['reason']})")
+                    action_panel.append(f" - [bold red]SELL ALL[/bold red] {s['ticker']}: {s['qty']:.4f} shares ({s['reason']})")
+                action_panel.append("\n[bold yellow]REPLACEMENT INSTRUCTIONS:[/bold yellow]")
+                action_panel.append("Use the cash from your sells to fund the BUY orders below.")
             
             target_total = max(total_value, self.engine.config['initial_capital'])
             target_per_stock = target_total / n_target if n_target > 0 else 0
             
+            # Find the top targets, excluding anything that triggered a sell signal today
+            buy_candidates = [t for t in sorted_tickers if t[0] not in to_sell_tickers][:n_target]
+            
             action_panel.append(f"\n[bold green]TARGET ALLOCATION (${target_per_stock:.2f} each):[/bold green]")
-            for t_rank in sorted_tickers[:n_target]:
+            for t_rank in buy_candidates:
                 ticker = t_rank[0]
                 is_held = self.engine.config['my_holdings'].get(ticker, {}).get('qty', 0) > 0
                 curr_val = self.engine.config['my_holdings'].get(ticker, {}).get('qty', 0) * data['prices'][ticker].iloc[-1] if is_held else 0
                 diff = target_per_stock - curr_val
                 
-                if diff > 5.0:
-                    action_panel.append(f" - [bold green]BUY[/bold green] {ticker}: ${diff:.2f} (~{(diff/data['prices'][ticker].iloc[-1]):.4f} shares)")
+                if not is_held:
+                    action_panel.append(f" - [bold green]BUY (New Entry)[/bold green] {ticker}: ${target_per_stock:.2f} (~{(target_per_stock/data['prices'][ticker].iloc[-1]):.4f} shares)")
+                elif diff > max(5.0, target_per_stock * 0.10):
+                    action_panel.append(f" - [bold green]BUY (Add)[/bold green] {ticker}: ${diff:.2f} (~{(diff/data['prices'][ticker].iloc[-1]):.4f} shares)")
                 elif is_held:
                     action_panel.append(f" - [bold blue]HOLD[/bold blue] {ticker}: (Current value ${curr_val:.2f})")
 

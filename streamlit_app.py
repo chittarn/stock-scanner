@@ -64,6 +64,11 @@ with tab1:
 
     st.markdown("---")
     
+    # Strategy Logic (Common for both columns)
+    n_target = 2 if data['regime'] == "BULL" else 1 if data['regime'] == "VOLATILE" else 0
+    sorted_tickers = sorted(data['scores'].items(), key=lambda x: x[1]['score'], reverse=True)
+    top_targets = [t for t, _ in sorted_tickers[:n_target]]
+    
     col_left, col_right = st.columns([2, 1])
     
     with col_left:
@@ -105,9 +110,6 @@ with tab1:
 
     with col_right:
         st.subheader("🎯 Action Plan")
-        n_target = 2 if data['regime'] == "BULL" else 1 if data['regime'] == "VOLATILE" else 0
-        sorted_tickers = sorted(data['scores'].items(), key=lambda x: x[1]['score'], reverse=True)
-        top_targets = [t for t, _ in sorted_tickers[:n_target]]
         
         if data['regime'] == "BEAR":
             st.error("🚨 SELL EVERYTHING - Market in BEAR Regime")

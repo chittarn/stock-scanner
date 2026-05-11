@@ -74,7 +74,29 @@ with tab1:
             curr_p = data['prices'][t].iloc[-1]
             val = h['qty'] * curr_p
             pnl = (curr_p / h['avg_cost'] - 1) * 100
-            port_items.append({"Ticker": t, "Shares": h['qty'], "Value": round(val, 2), "P&L %": round(pnl, 2)})
+            
+            # ATR Stop
+            curr_atr = data['atr'][t].iloc[-1]
+            atr_stop_dist = (engine.config['atr_mult'] * curr_atr) / curr_p * 100
+            
+            # Status Logic (Synchronized with CLI)
+            status = "✅ KEEP"
+            if data['regime'] == "BEAR":
+                status = "🔴 SELL"
+            elif pnl < -7:
+                status = "🚨 STOP"
+            elif t not in top_targets:
+                status = "🟠 EXIT"
+            elif not data['scores'][t]['above_ma200']:
+                status = "🟡 EXIT (MA)"
+            
+            port_items.append({
+                "Ticker": t, 
+                "Value": f"${val:.2f}", 
+                "P&L %": f"{pnl:+.1f}%", 
+                "Stop Loss (ATR)": f"-{atr_stop_dist:.1f}%",
+                "Status": status
+            })
         
         if port_items:
             st.table(pd.DataFrame(port_items))

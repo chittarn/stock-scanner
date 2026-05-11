@@ -85,7 +85,7 @@ with tab1:
         st.subheader("🎯 Action Plan")
         n_target = 2 if data['regime'] == "BULL" else 1 if data['regime'] == "VOLATILE" else 0
         sorted_tickers = sorted(data['scores'].items(), key=lambda x: x[1]['score'], reverse=True)
-        top_4 = [t for t, _ in sorted_tickers[:4]]
+        top_targets = [t for t, _ in sorted_tickers[:n_target]]
         
         if data['regime'] == "BEAR":
             st.error("🚨 SELL EVERYTHING - Market in BEAR Regime")
@@ -99,9 +99,9 @@ with tab1:
                 if pnl < -7: 
                     to_sell.append(t)
                     st.error(f"🔴 SELL ALL {t} (Stop Loss: {pnl:.1f}%)")
-                elif t not in top_4: 
+                elif t not in top_targets: 
                     to_sell.append(t)
-                    st.warning(f"🟠 SELL ALL {t} (Dropped Rank)")
+                    st.warning(f"🟠 SELL ALL {t} (Out of Top {n_target})")
                 elif not data['scores'][t]['above_ma200']:
                     to_sell.append(t)
                     st.warning(f"🟠 SELL ALL {t} (Below 200 SMA)")

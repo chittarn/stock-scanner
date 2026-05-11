@@ -48,12 +48,19 @@ class CLIScanner:
         rank_table.add_column("Price", justify="right")
         rank_table.add_column("Holdings", justify="center")
 
-        top_4 = [t for t, _ in sorted_tickers[:4]]
+        top_targets = [t for t, _ in sorted_tickers[:n_target]]
 
         for i, (t, d) in enumerate(sorted_tickers, 1):
             is_held = self.engine.config['my_holdings'].get(t, {}).get('qty', 0) > 0
             hold_icon = "[H]" if is_held else ""
-            row_style = "bold green" if i <= 2 else "yellow" if i <= 4 else ""
+            
+            # Row styling: Green for top targets, Yellow for next 2 (on deck), Dim for others
+            if i <= n_target:
+                row_style = "bold green"
+            elif i <= n_target + 2:
+                row_style = "yellow"
+            else:
+                row_style = "dim"
             
             rank_table.add_row(
                 str(i), t, d['sector'], f"{d['conviction']:.1f}", 
@@ -97,9 +104,9 @@ class CLIScanner:
             elif pnl_pct < -7: 
                 status = "[bold red]STOP[/bold red]"
                 reason = "Stop Loss"
-            elif t not in top_4:
+            elif t not in top_targets:
                 status = "[yellow]EXIT[/yellow]"
-                reason = "Dropped out of Top 4"
+                reason = f"Out of Top {n_target}"
             elif not data['scores'][t]['above_ma200']:
                 status = "[yellow]EXIT[/yellow]"
                 reason = "Below 200 SMA"

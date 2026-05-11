@@ -84,8 +84,10 @@ class ScannerEngine:
     def get_momentum_scores(self, prices):
         w6, w3 = 0.6, 0.4
         sectors = {
-            "NVDA": "Semiconductors", "SMH": "Semiconductors", "QQQ": "Index (Tech)",
-            "CAT": "Industrials", "XLE": "Energy", "GLD": "Gold", "MSFT": "Software"
+            "NVDA": "Semiconductors", "SMH": "Semiconductors", "AMD": "Semiconductors",
+            "AVGO": "Semiconductors", "QQQ": "Index (Tech)", "AMZN": "Consumer Disc",
+            "GOOGL": "Communication", "CAT": "Industrials", "XLE": "Energy",
+            "GLD": "Gold", "WMT": "Consumer Staples", "MSFT": "Software"
         }
         
         scores = {}

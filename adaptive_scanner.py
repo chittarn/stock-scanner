@@ -101,9 +101,9 @@ class CLIScanner:
             if data['regime'] == "BEAR":
                 status = "[red]SELL[/red]"
                 reason = "Bear Market"
-            elif pnl_pct < -7: 
+            elif pnl_pct < -atr_stop_dist: 
                 status = "[bold red]STOP[/bold red]"
-                reason = "Stop Loss"
+                reason = f"Stop Loss (ATR: -{atr_stop_dist:.1f}%)"
             elif t not in top_targets:
                 status = "[yellow]EXIT[/yellow]"
                 reason = f"Out of Top {n_target}"

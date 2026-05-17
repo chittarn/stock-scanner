@@ -88,7 +88,7 @@ with tab1:
             status = "✅ KEEP"
             if data['regime'] == "BEAR":
                 status = "🔴 SELL"
-            elif pnl < -7:
+            elif pnl < -atr_stop_dist:
                 status = "🚨 STOP"
             elif t not in top_targets:
                 status = "🟠 EXIT"
@@ -118,11 +118,14 @@ with tab1:
             to_sell = []
             for t, h in engine.config['my_holdings'].items():
                 if h['qty'] <= 0: continue
-                pnl = (data['prices'][t].iloc[-1] / h['avg_cost'] - 1) * 100
+                curr_p = data['prices'][t].iloc[-1]
+                pnl = (curr_p / h['avg_cost'] - 1) * 100
+                curr_atr = data['atr'][t].iloc[-1]
+                atr_stop_dist = (engine.config['atr_mult'] * curr_atr) / curr_p * 100
                 
-                if pnl < -7: 
+                if pnl < -atr_stop_dist: 
                     to_sell.append(t)
-                    st.error(f"🔴 SELL ALL {t} (Stop Loss: {pnl:.1f}%)")
+                    st.error(f"🔴 SELL ALL {t} (Stop Loss: {pnl:.1f}% < -{atr_stop_dist:.1f}%)")
                 elif t not in top_targets: 
                     to_sell.append(t)
                     st.warning(f"🟠 SELL ALL {t} (Out of Top {n_target})")

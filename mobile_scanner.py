@@ -107,7 +107,7 @@ class AdaptiveScannerApp:
         actions = []
         n_target = 2 if self.data['regime'] == "BULL" else 1 if self.data['regime'] == "VOLATILE" else 0
         sorted_tickers = sorted(self.data['scores'].items(), key=lambda x: x[1]['score'], reverse=True)
-        top_4 = [t for t, _ in sorted_tickers[:4]]
+        top_targets = [t for t, _ in sorted_tickers[:n_target]]
         
         to_sell = []
         for t, h in self.engine.config['my_holdings'].items():
@@ -115,10 +115,14 @@ class AdaptiveScannerApp:
             curr_price = self.data['prices'][t].iloc[-1]
             pnl_pct = (curr_price / h['avg_cost'] - 1) * 100
             
+            # ATR Stop
+            curr_atr = self.data['atr'][t].iloc[-1]
+            atr_stop_dist = (self.engine.config['atr_mult'] * curr_atr) / curr_price * 100
+            
             reason = ""
             if self.data['regime'] == "BEAR": reason = "Bear Market"
-            elif pnl_pct < -7: reason = "Stop Loss"
-            elif t not in top_4: reason = "Dropped from Top 4"
+            elif pnl_pct < -atr_stop_dist: reason = f"Stop Loss (ATR: -{atr_stop_dist:.1f}%)"
+            elif t not in top_targets: reason = f"Out of Top {n_target}"
             elif not self.data['scores'][t]['above_ma200']: reason = "Below 200 SMA"
             if reason: to_sell.append((t, reason))
 
@@ -126,7 +130,11 @@ class AdaptiveScannerApp:
             actions.append(self.action_item("SELL EVERYTHING", "Market is in Bear Regime", "red"))
         else:
             for t, r in to_sell: actions.append(self.action_item(f"SELL {t}", r, "red"))
-            for t_rank in sorted_tickers[:n_target]:
+            
+            to_sell_tickers = [s[0] for s in to_sell]
+            buy_candidates = [t for t in sorted_tickers if t[0] not in to_sell_tickers][:n_target]
+            
+            for t_rank in buy_candidates:
                 ticker = t_rank[0]
                 is_held = self.engine.config['my_holdings'].get(ticker, {}).get('qty', 0) > 0
                 if not is_held: actions.append(self.action_item(f"BUY {ticker}", "Top momentum ranking", "green"))
@@ -181,8 +189,8 @@ class AdaptiveScannerApp:
                     ft.Column([ft.Text(t, size=20, weight="bold"), ft.Text(f"{h['qty']:.4f} shares", size=12, color="white60")], expand=True),
                     ft.Column([ft.Text(f"${val:.2f}", size=18, weight="bold", text_align="right"), ft.Text(f"{pnl:+.1f}%", size=14, weight="bold", color=pnl_color, text_align="right")]),
                     ft.PopupMenuButton(items=[
-                        ft.PopupMenuItem(text="Edit", icon="edit", on_click=lambda _, ticker=t: self.edit_holding_dialog(ticker)),
-                        ft.PopupMenuItem(text="Delete", icon="delete", on_click=lambda _, ticker=t: self.delete_holding(ticker)),
+                        ft.PopupMenuItem(content="Edit", icon="edit", on_click=lambda _, ticker=t: self.edit_holding_dialog(ticker)),
+                        ft.PopupMenuItem(content="Delete", icon="delete", on_click=lambda _, ticker=t: self.delete_holding(ticker)),
                     ])
                 ]),
                 padding=15, bgcolor="#1E293B", border_radius=12, margin=ft.Margin(0, 0, 0, 10)

@@ -56,7 +56,10 @@ with tab1:
     total_cost = 0.0
     for t, h in engine.config['my_holdings'].items():
         if h['qty'] <= 0: continue
-        total_val += h['qty'] * data['prices'][t].iloc[-1]
+        curr_p = data['scores'].get(t, {}).get('price')
+        if curr_p is None or pd.isna(curr_p):
+            curr_p = data['prices'][t].dropna().iloc[-1] if (t in data['prices'].columns and len(data['prices'][t].dropna()) > 0) else h['avg_cost']
+        total_val += h['qty'] * curr_p
         total_cost += h['qty'] * h['avg_cost']
     
     pnl_pct = (total_val / total_cost - 1) * 100 if total_cost > 0 else 0
@@ -76,7 +79,9 @@ with tab1:
         port_items = []
         for t, h in engine.config['my_holdings'].items():
             if h['qty'] <= 0: continue
-            curr_p = data['prices'][t].iloc[-1]
+            curr_p = data['scores'].get(t, {}).get('price')
+            if curr_p is None or pd.isna(curr_p):
+                curr_p = data['prices'][t].dropna().iloc[-1] if (t in data['prices'].columns and len(data['prices'][t].dropna()) > 0) else h['avg_cost']
             val = h['qty'] * curr_p
             pnl = (curr_p / h['avg_cost'] - 1) * 100
             
@@ -118,7 +123,9 @@ with tab1:
             to_sell = []
             for t, h in engine.config['my_holdings'].items():
                 if h['qty'] <= 0: continue
-                curr_p = data['prices'][t].iloc[-1]
+                curr_p = data['scores'].get(t, {}).get('price')
+                if curr_p is None or pd.isna(curr_p):
+                    curr_p = data['prices'][t].dropna().iloc[-1] if (t in data['prices'].columns and len(data['prices'][t].dropna()) > 0) else h['avg_cost']
                 pnl = (curr_p / h['avg_cost'] - 1) * 100
                 curr_atr = data['atr'][t].iloc[-1]
                 atr_stop_dist = (engine.config['atr_mult'] * curr_atr) / curr_p * 100

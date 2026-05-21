@@ -3,10 +3,10 @@
 PORTFOLIO RISK & ACTION ANALYZER v2.0
 - Analyzes momentum, risk, and correlation.
 - Provides crystal clear Buy/Sell action steps.
-- Local high-information version.
+- Dynamic version powered by ScannerEngine.
 """
 
-import yfinance as yf
+from scanner_engine import ScannerEngine
 import pandas as pd
 import numpy as np
 from datetime import datetime
@@ -16,36 +16,12 @@ from rich.table import Table
 from rich.panel import Panel
 from rich.columns import Columns
 
-# ==========================================================
-# 🔧 CONFIGURATION (Synced with Scanner)
-# ==========================================================
-UNIVERSE = ["NVDA", "MSFT", "QQQ", "AMZN", "SMH", "CAT", "XLE", "WMT", "GLD"]
-SECTORS = {
-    "NVDA": "Semis", "MSFT": "Software", "QQQ": "Index (Tech)",
-    "AMZN": "Consumer", "SMH": "Semis", "CAT": "Industrials",
-    "XLE": "Energy", "WMT": "Retail", "GLD": "Gold"
-}
-INITIAL_CAPITAL = 300.0
-
-# 👇 UPDATE YOUR HOLDINGS HERE 👇
-MY_HOLDINGS = {
-    "NVDA": {"qty": 0.7596353, "avg_cost": 162.35},
-    "QQQ":  {"qty": 0.06518589, "avg_cost": 613.63},
-    "SMH":  {"qty": 0.04550342, "avg_cost": 439.53},
-    "CAT":  {"qty": 0.14455407, "avg_cost": 818.59},
-}
-
 class RiskActionAnalyzer:
     def __init__(self):
+        self.engine = ScannerEngine()
         self.console = Console()
         self.ist = pytz.timezone('Asia/Kolkata')
         self.now = datetime.now(self.ist)
-
-    def fetch_data(self):
-        with self.console.status("[bold green]Analyzing market data..."):
-            data = yf.download(UNIVERSE + ['SPY'], period="1y", auto_adjust=True, progress=False)
-            close = data['Close'].ffill()
-            return close
 
     def run(self):
         self.console.print(Panel.fit(
@@ -53,14 +29,17 @@ class RiskActionAnalyzer:
             border_style="blue"
         ))
 
-        prices = self.fetch_data()
-        
+        # Fetch dynamic scanner analysis
+        data = self.engine.get_analysis()
+        prices = data['prices']
+        regime = data['regime']
+        spy_price = data['spy_price']
+        spy_ma = data['spy_ma']
+        dist = data['dist']
+        scores = data['scores']
+        atr = data['atr']
+
         # 1. Market Regime
-        spy_price = prices['SPY'].iloc[-1]
-        spy_ma = prices['SPY'].rolling(window=200).mean().iloc[-1]
-        dist = (spy_price / spy_ma - 1) * 100
-        regime = "BULL" if dist >= 0 else "VOLATILE" if dist >= -5 else "BEAR"
-        
         reg_table = Table(title="Market Regime", box=None)
         reg_table.add_column("Metric", style="cyan")
         reg_table.add_column("Value")
@@ -72,16 +51,6 @@ class RiskActionAnalyzer:
         # 2. Momentum & Correlation
         returns = prices.pct_change().dropna()
         corr_matrix = returns.tail(60).corr() # 3-month correlation
-        
-        scores = {}
-        for t in UNIVERSE:
-            curr = prices[t].iloc[-1]
-            p6m = prices[t].iloc[-min(126, len(prices)-1)]
-            p3m = prices[t].iloc[-min(63, len(prices)-1)]
-            score = ((curr/p6m - 1) * 0.6 + (curr/p3m - 1) * 0.4) * 100
-            ma = prices[t].rolling(window=200).mean().iloc[-1]
-            above_ma = curr > ma if not pd.isna(ma) else True
-            scores[t] = {"score": score, "price": curr, "above_ma": above_ma}
 
         sorted_ranks = sorted(scores.items(), key=lambda x: x[1]['score'], reverse=True)
         t1, t2 = sorted_ranks[0][0], sorted_ranks[1][0]
@@ -102,13 +71,13 @@ class RiskActionAnalyzer:
             if i == 2 and correlation > 0.7: marker = "[red]HIGH CORR[/red]"
             elif i == 2: marker = "[green]OK[/green]"
             
-            trend = "[green]UP[/]" if d['above_ma'] else "[red]DN[/]"
-            rank_table.add_row(str(i), t, SECTORS.get(t, ""), f"{d['score']:.1f}%", trend, marker)
+            trend = "[green]UP[/]" if d['above_ma200'] else "[red]DN[/]"
+            rank_table.add_row(str(i), t, d['sector'], f"{d['score']:.1f}%", trend, marker)
         
         self.console.print(rank_table)
 
         # 4. Risk Profile Table
-        same_sector = SECTORS.get(t1) == SECTORS.get(t2)
+        same_sector = scores[t1]['sector'] == scores[t2]['sector']
         div_score = (1 - max(0, correlation)) * 100
         if same_sector: div_score *= 0.7
         
@@ -118,7 +87,7 @@ class RiskActionAnalyzer:
         risk_table.add_column("Impact")
         
         risk_table.add_row("Correlation", f"{correlation:.2f}", "[red]HIGH[/]" if correlation > 0.7 else "[green]LOW[/]")
-        risk_table.add_row("Sector Overlap", f"{SECTORS.get(t1)} | {SECTORS.get(t2)}", "[red]MATCH[/]" if same_sector else "[green]NO[/]")
+        risk_table.add_row("Sector Overlap", f"{scores[t1]['sector']} | {scores[t2]['sector']}", "[red]MATCH[/]" if same_sector else "[green]NO[/]")
         risk_table.add_row("Diversification Score", f"{div_score:.0f}/100", "[yellow]MODERATE[/]")
         self.console.print(risk_table)
 
@@ -126,18 +95,41 @@ class RiskActionAnalyzer:
         total_val = 0.0
         total_cost = 0.0
         to_sell = []
-        top_4 = [r[0] for r in sorted_ranks[:4]]
         
-        for t, h in MY_HOLDINGS.items():
-            if h['qty'] <= 0: continue
-            curr_p = prices[t].iloc[-1]
-            total_val += h['qty'] * curr_p
-            total_cost += h['qty'] * h['avg_cost']
-            if regime == "BEAR" or t not in top_4 or not scores[t]['above_ma']:
-                to_sell.append(t)
-
-        target_total = max(total_val, INITIAL_CAPITAL)
         n_target = 2 if regime == "BULL" else 1 if regime == "VOLATILE" else 0
+        top_targets = [t for t, _ in sorted_ranks[:n_target]]
+        
+        for t, h in self.engine.config['my_holdings'].items():
+            if h['qty'] <= 0: continue
+            
+            curr_price = scores.get(t, {}).get('price')
+            if curr_price is None or pd.isna(curr_price):
+                curr_price = prices[t].dropna().iloc[-1] if (t in prices.columns and len(prices[t].dropna()) > 0) else h['avg_cost']
+                
+            val = h['qty'] * curr_price
+            cost = h['qty'] * h['avg_cost']
+            total_val += val
+            total_cost += cost
+            pnl_pct = (curr_price / h['avg_cost'] - 1) * 100
+            
+            # ATR Stop
+            curr_atr = atr[t].iloc[-1]
+            atr_stop_dist = (self.engine.config['atr_mult'] * curr_atr) / curr_price * 100
+            
+            reason = ""
+            if regime == "BEAR":
+                reason = "Bear Market"
+            elif pnl_pct < -atr_stop_dist:
+                reason = f"Stop Loss (ATR: -{atr_stop_dist:.1f}%)"
+            elif t not in top_targets:
+                reason = f"Out of Top {n_target}"
+            elif not scores[t]['above_ma200']:
+                reason = "Below 200 SMA"
+                
+            if reason:
+                to_sell.append((t, reason))
+
+        target_total = max(total_val, self.engine.config['initial_capital'])
         target_per = target_total / n_target if n_target > 0 else 0
 
         action_text = []
@@ -146,18 +138,27 @@ class RiskActionAnalyzer:
         else:
             if to_sell:
                 action_text.append("[bold red]SELL ORDERS:[/bold red]")
-                for s in to_sell:
-                    action_text.append(f" - [bold]{s}[/bold]: Exit completely. (Reason: Dropped from Top 4 or Trend DN)")
+                for s, r in to_sell:
+                    action_text.append(f" - [bold]{s}[/bold]: Exit completely. (Reason: {r})")
             
             action_text.append(f"\n[bold green]BUY / TOP-UP ORDERS (Target ${target_per:.2f} ea):[/bold green]")
-            for t in [r[0] for r in sorted_ranks[:n_target]]:
-                curr_shares = MY_HOLDINGS.get(t, {}).get('qty', 0)
-                curr_v = curr_shares * prices[t].iloc[-1]
+            
+            # Find the top targets, excluding anything that triggered a sell signal today
+            to_sell_tickers = [s[0] for s in to_sell]
+            buy_candidates = [t for t in sorted_ranks if t[0] not in to_sell_tickers][:n_target]
+            
+            for t_rank in buy_candidates:
+                ticker = t_rank[0]
+                is_held = self.engine.config['my_holdings'].get(ticker, {}).get('qty', 0) > 0
+                curr_v = self.engine.config['my_holdings'].get(ticker, {}).get('qty', 0) * prices[ticker].iloc[-1] if is_held else 0
                 diff = target_per - curr_v
-                if diff > 5.0:
-                    action_text.append(f" - [bold]BUY {t}[/bold]: Invest [green]${diff:.2f}[/] (~{(diff/prices[t].iloc[-1]):.4f} shares)")
+                
+                if not is_held:
+                    action_text.append(f" - [bold]BUY {ticker}[/bold]: Invest [green]${target_per:.2f}[/] (~{(target_per/prices[ticker].iloc[-1]):.4f} shares)")
+                elif diff > max(5.0, target_per * 0.10):
+                    action_text.append(f" - [bold]BUY (Add) {ticker}[/bold]: Invest [green]${diff:.2f}[/] (~{(diff/prices[ticker].iloc[-1]):.4f} shares)")
                 else:
-                    action_text.append(f" - [bold]HOLD {t}[/bold]: Position already sized correctly.")
+                    action_text.append(f" - [bold]HOLD {ticker}[/bold]: Position already sized correctly.")
 
             if div_score < 40:
                 action_text.append(f"\n[bold yellow]RISK TIP:[/bold yellow] {t1} and {t2} are moving together. If you want more safety, buy {t3} instead of {t2}.")
@@ -167,3 +168,4 @@ class RiskActionAnalyzer:
 if __name__ == "__main__":
     analyzer = RiskActionAnalyzer()
     analyzer.run()
+

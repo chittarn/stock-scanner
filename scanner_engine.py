@@ -50,7 +50,12 @@ class ScannerEngine:
     def fetch_data(self):
         symbols = self.config['universe'] + ['SPY']
         data = yf.download(symbols, period="1y", auto_adjust=True, progress=False)
-        return data['Close'].ffill(), data['High'].ffill(), data['Low'].ffill()
+        if data.empty:
+            raise ValueError("No market data downloaded from yfinance. Please check your internet connection.")
+        close = data['Close'].ffill().bfill()
+        high = data['High'].ffill().bfill()
+        low = data['Low'].ffill().bfill()
+        return close, high, low
 
     def calculate_atr(self, close, high, low, period=14):
         tr = pd.DataFrame(index=close.index)
@@ -60,14 +65,23 @@ class ScannerEngine:
                 h_pc = abs(high[t] - close[t].shift(1))
                 l_pc = abs(low[t] - close[t].shift(1))
                 tr[t] = pd.concat([h_l, h_pc, l_pc], axis=1).max(axis=1)
-        atr = tr.rolling(window=period).mean()
+        atr = tr.rolling(window=period).mean().ffill().bfill()
         return atr
 
     def get_market_regime(self, prices):
-        spy_price = prices['SPY'].iloc[-1]
-        spy_ma = prices['SPY'].rolling(window=self.config['ma_period']).mean().iloc[-1]
+        if 'SPY' not in prices.columns:
+            return "BULL", 0.0, 0.0, 0.0
+            
+        valid_spy = prices['SPY'].dropna()
+        if len(valid_spy) < self.config['ma_period']:
+            ma_period = max(5, len(valid_spy))
+        else:
+            ma_period = self.config['ma_period']
+            
+        spy_price = valid_spy.iloc[-1] if len(valid_spy) > 0 else 0.0
+        spy_ma = valid_spy.rolling(window=ma_period).mean().iloc[-1] if len(valid_spy) > 0 else 0.0
         
-        if pd.isna(spy_ma):
+        if spy_ma == 0:
             return "BULL", spy_price, 0.0, 0.0
             
         dist_pct = (spy_price / spy_ma - 1) * 100
@@ -93,16 +107,21 @@ class ScannerEngine:
         scores = {}
         for t in self.config['universe']:
             if t in prices.columns:
-                curr = prices[t].iloc[-1]
-                p3m = prices[t].iloc[-min(63, len(prices)-1)]
-                p6m = prices[t].iloc[-min(126, len(prices)-1)]
+                valid_prices = prices[t].dropna()
+                if len(valid_prices) < 10:
+                    continue
+                
+                curr = valid_prices.iloc[-1]
+                p3m = valid_prices.iloc[-min(63, len(valid_prices)-1)]
+                p6m = valid_prices.iloc[-min(126, len(valid_prices)-1)]
                 
                 ret3m = (curr / p3m - 1) * 100 if p3m > 0 else 0
                 ret6m = (curr / p6m - 1) * 100 if p6m > 0 else 0
                 score = (ret6m * w6) + (ret3m * w3)
                 
-                ma200 = prices[t].rolling(window=200).mean().iloc[-1]
-                above_ma200 = curr > ma200 if not pd.isna(ma200) else True
+                ma_len = min(200, len(valid_prices))
+                ma200 = valid_prices.rolling(window=ma_len).mean().iloc[-1]
+                above_ma200 = curr > ma200
                 conviction = score * 1.2 if above_ma200 else score * 0.5
                 
                 scores[t] = {

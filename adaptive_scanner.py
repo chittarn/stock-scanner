@@ -84,7 +84,10 @@ class CLIScanner:
         for t, h in self.engine.config['my_holdings'].items():
             if h['qty'] <= 0: continue
             
-            curr_price = data['prices'][t].iloc[-1]
+            curr_price = data['scores'].get(t, {}).get('price')
+            if curr_price is None or pd.isna(curr_price):
+                curr_price = data['prices'][t].dropna().iloc[-1] if (t in data['prices'].columns and len(data['prices'][t].dropna()) > 0) else h['avg_cost']
+                
             val = h['qty'] * curr_price
             cost = h['qty'] * h['avg_cost']
             total_value += val

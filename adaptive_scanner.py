@@ -17,13 +17,13 @@ class CLIScanner:
         self.console = Console()
 
     def run(self):
-        rprint(Panel.fit(
-            f"[bold cyan]ADAPTIVE MOMENTUM SCANNER[/bold cyan]\n[dim]{self.engine.now.strftime('%Y-%m-%d %I:%M %p IST')}[/dim]",
-            border_style="blue"
-        ))
-
         with self.console.status("[bold green]Fetching & Analyzing data..."):
             data = self.engine.get_analysis()
+
+        rprint(Panel.fit(
+            f"[bold cyan]ADAPTIVE MOMENTUM SCANNER[/bold cyan]\n[dim]{data['timestamp']}[/dim]",
+            border_style="blue"
+        ))
 
         # 📊 Market Regime Table
         reg_color = "green" if data['regime'] == "BULL" else "yellow" if data['regime'] == "VOLATILE" else "red"
@@ -36,38 +36,55 @@ class CLIScanner:
         reg_table.add_row("Regime", f"[{reg_color}]{data['regime']}[/{reg_color}]")
         self.console.print(reg_table)
 
-        # 📈 Rankings Table
-        n_target = 2 if data['regime'] == "BULL" else 1 if data['regime'] == "VOLATILE" else 0
-        sorted_tickers = sorted(data['scores'].items(), key=lambda x: x[1]['score'], reverse=True)
-        
+        # 📈 Rankings Table (Sorted by Conviction)
+        n_target = data['n_target']
         rank_table = Table(title=f"Momentum Rankings (Target Top {n_target})")
         rank_table.add_column("Rank", justify="center")
         rank_table.add_column("Ticker", style="bold")
         rank_table.add_column("Sector", style="dim")
+        rank_table.add_column("Score", justify="right")
         rank_table.add_column("Conviction", justify="right")
-        rank_table.add_column("Price", justify="right")
+        rank_table.add_column("Trend", justify="center")
         rank_table.add_column("Holdings", justify="center")
 
-        top_targets = [t for t, _ in sorted_tickers[:n_target]]
+        top_targets = data['top_targets']
 
-        for i, (t, d) in enumerate(sorted_tickers, 1):
+        for i, (t, d) in enumerate(data['sorted_ranks'], 1):
             is_held = self.engine.config['my_holdings'].get(t, {}).get('qty', 0) > 0
             hold_icon = "[H]" if is_held else ""
+            trend_str = "[green]UP[/green]" if d['above_ma200'] else "[red]DN[/red]"
             
-            # Row styling: Green for top targets, Yellow for next 2 (on deck), Dim for others
-            if i <= n_target:
+            # Row styling: Green for top targets, Yellow for other eligible ones, Dim for others
+            if t in top_targets:
                 row_style = "bold green"
-            elif i <= n_target + 2:
+            elif t in data['eligible_candidates']:
                 row_style = "yellow"
             else:
                 row_style = "dim"
             
             rank_table.add_row(
-                str(i), t, d['sector'], f"{d['conviction']:.1f}", 
-                f"${d['price']:.2f}", hold_icon,
+                str(i), t, d['sector'], f"{d['score']:.1f}%", f"{d['conviction']:.1f}", 
+                trend_str, hold_icon,
                 style=row_style
             )
         self.console.print(rank_table)
+
+        # 🛡️ Risk & Diversification Panel
+        if len(top_targets) >= 2:
+            t1, t2 = top_targets[0], top_targets[1]
+            risk_table = Table(title=f"Detailed Risk Profile: {t1} vs {t2}", box=None)
+            risk_table.add_column("Metric", style="cyan")
+            risk_table.add_column("Value", style="bold")
+            risk_table.add_column("Impact", justify="center")
+            
+            corr_impact = "[red]HIGH[/red]" if data['top_correlation'] > 0.7 else "[green]LOW[/green]"
+            sector_impact = "[red]MATCH[/red]" if data['same_sector'] else "[green]NO[/green]"
+            div_color = "red" if data['diversification_score'] < 30 else "yellow" if data['diversification_score'] < 70 else "green"
+            
+            risk_table.add_row("Correlation", f"{data['top_correlation']:.2f}", corr_impact)
+            risk_table.add_row("Sector Overlap", f"{data['scores'][t1]['sector']} | {data['scores'][t2]['sector']}", sector_impact)
+            risk_table.add_row("Diversification Score", f"[{div_color}]{data['diversification_score']:.0f}/100[/{div_color}]", "")
+            self.console.print(risk_table)
 
         # 💼 Portfolio Analysis
         port_table = Table(title="Current Portfolio Status")
@@ -76,61 +93,25 @@ class CLIScanner:
         port_table.add_column("P&L %", justify="right")
         port_table.add_column("Stop Loss (ATR)", justify="right")
         port_table.add_column("Status", justify="center")
-
-        total_value = 0.0
-        total_cost = 0.0
-        to_sell = []
         
-        for t, h in self.engine.config['my_holdings'].items():
-            if h['qty'] <= 0: continue
+        for item in data['portfolio_items']:
+            status_style = "bold green" if item['status'] == "KEEP" else "bold red" if item['status'] in ["SELL", "STOP"] else "yellow"
+            status_display = f"[{status_style}]{item['status']}[/{status_style}]"
             
-            curr_price = data['scores'].get(t, {}).get('price')
-            if curr_price is None or pd.isna(curr_price):
-                curr_price = data['prices'][t].dropna().iloc[-1] if (t in data['prices'].columns and len(data['prices'][t].dropna()) > 0) else h['avg_cost']
-                
-            val = h['qty'] * curr_price
-            cost = h['qty'] * h['avg_cost']
-            total_value += val
-            total_cost += cost
-            pnl_pct = (curr_price / h['avg_cost'] - 1) * 100
-            
-            # ATR Stop
-            curr_atr = data['atr'][t].iloc[-1]
-            atr_stop_dist = (self.engine.config['atr_mult'] * curr_atr) / curr_price * 100
-            
-            status = "[green]KEEP[/green]"
-            reason = ""
-            
-            if data['regime'] == "BEAR":
-                status = "[red]SELL[/red]"
-                reason = "Bear Market"
-            elif pnl_pct < -atr_stop_dist: 
-                status = "[bold red]STOP[/bold red]"
-                reason = f"Stop Loss (ATR: -{atr_stop_dist:.1f}%)"
-            elif t not in top_targets:
-                status = "[yellow]EXIT[/yellow]"
-                reason = f"Out of Top {n_target}"
-            elif not data['scores'][t]['above_ma200']:
-                status = "[yellow]EXIT[/yellow]"
-                reason = "Below 200 SMA"
-            
-            if "SELL" in status or "EXIT" in status or "STOP" in status:
-                to_sell.append({'ticker': t, 'qty': h['qty'], 'reason': reason})
-
             port_table.add_row(
-                t, f"${val:.2f}", f"{pnl_pct:+.1f}%", 
-                f"-{atr_stop_dist:.1f}%", status
+                item['ticker'], f"${item['value']:.2f}", f"{item['pnl_pct']:+.1f}%", 
+                f"-{item['atr_stop_dist']:.1f}%", status_display
             )
         
         self.console.print(port_table)
 
         # 📊 Summary
-        if total_cost > 0:
+        if data['total_cost'] > 0:
             summary_table = Table(title="Portfolio Summary", box=None)
-            total_pnl_pct = (total_value / total_cost - 1) * 100
+            total_pnl_pct = (data['total_value'] / data['total_cost'] - 1) * 100
             pnl_color = "green" if total_pnl_pct >= 0 else "red"
-            summary_table.add_row("Total Invested", f"${total_cost:.2f}")
-            summary_table.add_row("Current Value", f"${total_value:.2f}")
+            summary_table.add_row("Total Invested", f"${data['total_cost']:.2f}")
+            summary_table.add_row("Current Value", f"${data['total_value']:.2f}")
             summary_table.add_row("Overall P&L %", f"[{pnl_color}]{total_pnl_pct:+.2f}%[/{pnl_color}]")
             self.console.print(summary_table)
 
@@ -139,34 +120,23 @@ class CLIScanner:
         if data['regime'] == "BEAR":
             action_panel.append("[bold red]ACTION: SELL EVERYTHING - MARKET IN BEAR REGIME[/bold red]")
         else:
-            to_sell_tickers = [s['ticker'] for s in to_sell]
-
-            if to_sell:
+            if data['to_sell']:
                 action_panel.append("[bold red]SELL ORDERS (Execute Immediately):[/bold red]")
-                for s in to_sell:
+                for s in data['to_sell']:
                     action_panel.append(f" - [bold red]SELL ALL[/bold red] {s['ticker']}: {s['qty']:.4f} shares ({s['reason']})")
                 action_panel.append("\n[bold yellow]REPLACEMENT INSTRUCTIONS:[/bold yellow]")
                 action_panel.append("Use the cash from your sells to fund the BUY orders below.")
             
-            target_total = max(total_value, self.engine.config['initial_capital'])
-            target_per_stock = target_total / n_target if n_target > 0 else 0
+            if data['buy_orders'] or data['hold_orders']:
+                action_panel.append(f"\n[bold green]TARGET ALLOCATION (Top {n_target} uptrending assets):[/bold green]")
+                for b in data['buy_orders']:
+                    buy_type = "New Entry" if b['type'] == 'NEW' else "Add"
+                    action_panel.append(f" - [bold green]BUY ({buy_type})[/bold green] {b['ticker']}: ${b['amount']:.2f} (~{b['shares']:.4f} shares)")
+                for h in data['hold_orders']:
+                    action_panel.append(f" - [bold blue]HOLD[/bold blue] {h['ticker']}: (Current value ${h['value']:.2f})")
             
-            # Find the top targets, excluding anything that triggered a sell signal today
-            buy_candidates = [t for t in sorted_tickers if t[0] not in to_sell_tickers][:n_target]
-            
-            action_panel.append(f"\n[bold green]TARGET ALLOCATION (${target_per_stock:.2f} each):[/bold green]")
-            for t_rank in buy_candidates:
-                ticker = t_rank[0]
-                is_held = self.engine.config['my_holdings'].get(ticker, {}).get('qty', 0) > 0
-                curr_val = self.engine.config['my_holdings'].get(ticker, {}).get('qty', 0) * data['prices'][ticker].iloc[-1] if is_held else 0
-                diff = target_per_stock - curr_val
-                
-                if not is_held:
-                    action_panel.append(f" - [bold green]BUY (New Entry)[/bold green] {ticker}: ${target_per_stock:.2f} (~{(target_per_stock/data['prices'][ticker].iloc[-1]):.4f} shares)")
-                elif diff > max(5.0, target_per_stock * 0.10):
-                    action_panel.append(f" - [bold green]BUY (Add)[/bold green] {ticker}: ${diff:.2f} (~{(diff/data['prices'][ticker].iloc[-1]):.4f} shares)")
-                elif is_held:
-                    action_panel.append(f" - [bold blue]HOLD[/bold blue] {ticker}: (Current value ${curr_val:.2f})")
+            if data['risk_tip']:
+                action_panel.append(f"\n[bold yellow]RISK TIP:[/bold yellow] {data['risk_tip']}")
 
         if not action_panel:
             action_panel.append("OK: Everything looks good. No trades needed this week.")

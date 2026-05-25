@@ -1,24 +1,12 @@
 #!/usr/bin/env python3
-"""
-ADAPTIVE MOMENTUM BACKTEST (Refined) – Low Turnover Strategy
-- 6-month (0.6) + 3-month (0.4) Weighted Momentum
-- Hysteresis: Buy Top 2, Sell if > Rank 4
-- Trend Filter: Stock must be above 200-day SMA to buy
-- Fees: 0.3% per trade
-"""
-
 import yfinance as yf
 import pandas as pd
 import numpy as np
-from datetime import datetime, timedelta
-import argparse
 import warnings
-from rich.console import Console
-from rich.table import Table
+from datetime import datetime, timedelta
 
 warnings.filterwarnings('ignore')
 
-# Strategy Parameters
 UNIVERSE = ["NVDA", "MSFT", "QQQ", "AMZN", "SMH", "CAT", "XLE", "WMT", "GLD"]
 MA_PERIOD = 200
 ATR_PERIOD = 14
@@ -28,45 +16,29 @@ MIN_TRADE = 5.0
 W6 = 0.6
 W3 = 0.4
 
-class AdaptiveBacktest:
-    def __init__(self, start_date, end_date=None, initial_capital=300.0):
-        self.console = Console()
+class ComparativeBacktest:
+    def __init__(self, start_date, sort_by='score'):
         self.start = start_date
-        # Buffer to calculate MA and Momentum
         buffer_start = datetime.strptime(start_date, '%Y-%m-%d') - timedelta(days=300)
         self.data_start = buffer_start.strftime('%Y-%m-%d')
-        self.data_end = end_date or datetime.now().strftime('%Y-%m-%d')
+        self.data_end = datetime.now().strftime('%Y-%m-%d')
         self.display_start = pd.to_datetime(start_date)
+        self.sort_by = sort_by
         
-        self.capital = initial_capital
-        self.cash = initial_capital
-        self.holdings = {} # {ticker: {shares, cost}}
+        self.capital = 300.0
+        self.cash = 300.0
+        self.holdings = {}
         self.trades = []
         self.history = []
-        
+
     def fetch_data(self):
-        self.console.print(f"[cyan]Fetch: Data from {self.data_start} to {self.data_end}...[/cyan]")
         symbols = UNIVERSE + ['SPY']
         data = yf.download(symbols, start=self.data_start, end=self.data_end, auto_adjust=True, progress=False)
         self.prices = data['Close'].ffill()
         self.high = data['High'].ffill()
         self.low = data['Low'].ffill()
-        
-        # Precompute indicators
         self.spy_ma = self.prices['SPY'].rolling(window=MA_PERIOD).mean()
         self.mas = self.prices.rolling(window=MA_PERIOD).mean()
-        
-        # ATR Calculation
-        self.atrs = pd.DataFrame(index=self.prices.index)
-        for t in UNIVERSE:
-            if t in self.prices.columns:
-                h_l = self.high[t] - self.low[t]
-                h_pc = abs(self.high[t] - self.prices[t].shift(1))
-                l_pc = abs(self.low[t] - self.prices[t].shift(1))
-                tr = pd.concat([h_l, h_pc, l_pc], axis=1).max(axis=1)
-                self.atrs[t] = tr.rolling(window=ATR_PERIOD).mean()
-                
-        self.console.print(f"[green]OK: Data loaded: {len(self.prices)} days[/green]")
 
     def get_regime(self, date):
         spy_price = self.prices['SPY'].loc[date]
@@ -96,11 +68,17 @@ class AdaptiveBacktest:
                 ma = self.mas[t].loc[date]
                 above_ma = curr > ma if not pd.isna(ma) else True
                 
+                # conviction
                 conviction = score * 1.2 if above_ma else score * 0.5
+                
                 scores[t] = {'score': score, 'above_ma': above_ma, 'conviction': conviction}
         
-        sorted_ranks = sorted(scores.items(), key=lambda x: x[1]['conviction'], reverse=True)
-        return sorted_ranks # List of (ticker, data)
+        if self.sort_by == 'conviction':
+            sorted_ranks = sorted(scores.items(), key=lambda x: x[1]['conviction'], reverse=True)
+        else:
+            sorted_ranks = sorted(scores.items(), key=lambda x: x[1]['score'], reverse=True)
+            
+        return sorted_ranks
 
     def portfolio_value(self, date):
         val = self.cash
@@ -121,10 +99,9 @@ class AdaptiveBacktest:
         self.cash += net
         del self.holdings[ticker]
         self.trades.append({
-            'date': date, 'action': 'SELL', 'ticker': ticker,
-            'price': price, 'shares': shares, 'pnl': pnl, 
+            'date': date, 'action': 'SELL', 'ticker': ticker, 'pnl': pnl,
             'pnl_pct': (net / (shares * cost) - 1) * 100 if cost > 0 else 0,
-            'reason': reason, 'fee': fee
+            'reason': reason
         })
 
     def buy(self, date, ticker, amount):
@@ -142,10 +119,6 @@ class AdaptiveBacktest:
         h['cost'] = ((h['shares'] * h['cost']) + (shares * price)) / total_shares if total_shares > 0 else price
         h['shares'] = total_shares
         self.cash -= amount
-        self.trades.append({
-            'date': date, 'action': 'BUY', 'ticker': ticker,
-            'price': price, 'shares': shares, 'fee': fee
-        })
 
     def rebalance(self, date):
         regime = self.get_regime(date)
@@ -159,15 +132,14 @@ class AdaptiveBacktest:
         top_2 = [r[0] for r in rankings[:2]]
         top_4 = [r[0] for r in rankings[:4]]
         
-        # 1. Stop Loss Check (ATR-based approx or fixed)
+        # 1. Stop Loss Check
         for t in list(self.holdings.keys()):
             price = self.prices[t].loc[date]
             cost = self.holdings[t]['cost']
-            # Using 10% hard stop for backtest stability, but ATR-based logic could be added
             if (price / cost - 1) < -0.10: 
                 self.sell(date, t, 'STOP_LOSS')
 
-        # 2. Hysteresis Sell: Drop if not in Top 4 OR below 200 SMA
+        # 2. Hysteresis Sell
         for t in list(self.holdings.keys()):
             if t not in top_4:
                 self.sell(date, t, 'RANK_EXIT')
@@ -176,7 +148,7 @@ class AdaptiveBacktest:
                 if self.prices[t].loc[date] < ma:
                     self.sell(date, t, 'BELOW_SMA')
 
-        # 3. New Buys: If Rank is Top 2 AND Above SMA
+        # 3. New Buys
         total_val = self.portfolio_value(date)
         target_per_stock = total_val / n_target
         
@@ -191,65 +163,25 @@ class AdaptiveBacktest:
     def run(self):
         self.fetch_data()
         dates = self.prices.index
-        # Scan on Fridays
         fridays = dates[dates.dayofweek == 4]
-        bench_shares = self.capital / self.prices['SPY'].loc[self.display_start:].iloc[0]
         
         for date in dates:
             val = self.portfolio_value(date)
-            bench = bench_shares * self.prices['SPY'].loc[date]
-            
             if date >= self.display_start:
-                self.history.append({
-                    'date': date, 'portfolio': val, 'benchmark': bench,
-                    'cash': self.cash, 'positions': len(self.holdings)
-                })
-            
+                self.history.append({'date': date, 'portfolio': val})
             if date in fridays and date >= self.display_start:
                 self.rebalance(date)
         
-        self.report()
+        return self.history[-1]['portfolio']
 
-    def report(self):
-        df = pd.DataFrame(self.history)
-        if df.empty: return
-        
-        final_val = df['portfolio'].iloc[-1]
-        final_bench = df['benchmark'].iloc[-1]
-        total_ret = (final_val / self.capital - 1) * 100
-        bench_ret = (final_bench / self.capital - 1) * 100
-        
-        table = Table(title="Backtest Summary")
-        table.add_column("Metric", style="cyan")
-        table.add_column("Strategy", justify="right")
-        table.add_column("SPY", justify="right")
-        table.add_row("Total Return", f"{total_ret:.1f}%", f"{bench_ret:.1f}%")
-        table.add_row("Final Value", f"${final_val:.2f}", f"${final_bench:.2f}")
-        table.add_row("Trades", str(len(self.trades)), "-")
-        
-        self.console.print(table)
-        
-        if len(self.trades) > 0:
-            trade_df = pd.DataFrame(self.trades)
-            sells = trade_df[trade_df['action'] == 'SELL']
-            if not sells.empty:
-                win_rate = (sells['pnl'] > 0).sum() / len(sells) * 100
-                self.console.print(f"[bold]Win Rate:[/bold] {win_rate:.1f}%")
-            
-            self.console.print("\n[bold]Recent Trades:[/bold]")
-            for _, t in trade_df.tail(10).iterrows():
-                color = "green" if t['action'] == "BUY" else "red"
-                pnl_str = f" P&L: {t['pnl']:+.2f}" if t['action'] == "SELL" else ""
-                self.console.print(f"[{color}]{t['date'].date()} {t['action']} {t['ticker']}[/{color}] @ ${t['price']:.2f}{pnl_str}")
+print("Running Backtest comparison...")
+start_dt = '2022-01-01'
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--start', default='2020-01-01')
-    parser.add_argument('--capital', type=float, default=300.0)
-    args = parser.parse_args()
-    
-    bt = AdaptiveBacktest(args.start, initial_capital=args.capital)
-    bt.run()
+bt_score = ComparativeBacktest(start_dt, sort_by='score')
+final_score = bt_score.run()
 
-if __name__ == "__main__":
-    main()
+bt_conv = ComparativeBacktest(start_dt, sort_by='conviction')
+final_conv = bt_conv.run()
+
+print(f"Final Value sorted by Score: ${final_score:.2f} (Total Return: {((final_score/300.0)-1)*100:.1f}%)")
+print(f"Final Value sorted by Conviction: ${final_conv:.2f} (Total Return: {((final_conv/300.0)-1)*100:.1f}%)")

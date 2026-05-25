@@ -67,51 +67,50 @@ with tab1:
 
     st.markdown("---")
     
-    # Strategy Logic (Common for both columns)
-    n_target = 2 if data['regime'] == "BULL" else 1 if data['regime'] == "VOLATILE" else 0
-    sorted_tickers = sorted(data['scores'].items(), key=lambda x: x[1]['score'], reverse=True)
-    top_targets = [t for t, _ in sorted_tickers[:n_target]]
+     # Strategy Logic (Pre-calculated in engine)
+    n_target = data['n_target']
+    top_targets = data['top_targets']
     
     col_left, col_right = st.columns([2, 1])
     
     with col_left:
         st.subheader("💼 Your Portfolio")
         port_items = []
-        for t, h in engine.config['my_holdings'].items():
-            if h['qty'] <= 0: continue
-            curr_p = data['scores'].get(t, {}).get('price')
-            if curr_p is None or pd.isna(curr_p):
-                curr_p = data['prices'][t].dropna().iloc[-1] if (t in data['prices'].columns and len(data['prices'][t].dropna()) > 0) else h['avg_cost']
-            val = h['qty'] * curr_p
-            pnl = (curr_p / h['avg_cost'] - 1) * 100
-            
-            # ATR Stop
-            curr_atr = data['atr'][t].iloc[-1]
-            atr_stop_dist = (engine.config['atr_mult'] * curr_atr) / curr_p * 100
-            
-            # Status Logic (Synchronized with CLI)
-            status = "✅ KEEP"
-            if data['regime'] == "BEAR":
-                status = "🔴 SELL"
-            elif pnl < -atr_stop_dist:
-                status = "🚨 STOP"
-            elif t not in top_targets:
-                status = "🟠 EXIT"
-            elif not data['scores'][t]['above_ma200']:
-                status = "🟡 EXIT (MA)"
-            
+        for item in data['portfolio_items']:
+            status_map = {
+                "KEEP": "✅ KEEP",
+                "SELL": "🔴 SELL",
+                "STOP": "🚨 STOP",
+                "EXIT": "🟠 EXIT"
+            }
             port_items.append({
-                "Ticker": t, 
-                "Value": f"${val:.2f}", 
-                "P&L %": f"{pnl:+.1f}%", 
-                "Stop Loss (ATR)": f"-{atr_stop_dist:.1f}%",
-                "Status": status
+                "Ticker": item['ticker'],
+                "Value": f"${item['value']:.2f}",
+                "P&L %": f"{item['pnl_pct']:+.1f}%",
+                "Stop Loss (ATR)": f"-{item['atr_stop_dist']:.1f}%",
+                "Status": status_map.get(item['status'], item['status'])
             })
         
         if port_items:
             st.table(pd.DataFrame(port_items))
         else:
             st.info("No holdings found. Add them in Settings.")
+
+        # 🛡️ Risk & Diversification Profile
+        if len(top_targets) >= 2:
+            st.markdown("---")
+            st.subheader("🛡️ Risk & Diversification Profile")
+            t1, t2 = top_targets[0], top_targets[1]
+            
+            corr_impact = "🔴 HIGH" if data['top_correlation'] > 0.7 else "🟢 LOW"
+            sector_impact = "🔴 MATCH" if data['same_sector'] else "🟢 NO"
+            
+            risk_profile_items = [
+                {"Metric": "Correlation", "Value": f"{data['top_correlation']:.2f}", "Impact": corr_impact},
+                {"Metric": "Sector Overlap", "Value": f"{data['scores'][t1]['sector']} | {data['scores'][t2]['sector']}", "Impact": sector_impact},
+                {"Metric": "Diversification Score", "Value": f"{data['diversification_score']:.0f}/100", "Impact": ""}
+            ]
+            st.table(pd.DataFrame(risk_profile_items))
 
     with col_right:
         st.subheader("🎯 Action Plan")
@@ -120,50 +119,37 @@ with tab1:
             st.error("🚨 SELL EVERYTHING - Market in BEAR Regime")
         else:
             # Check Sells
-            to_sell = []
-            for t, h in engine.config['my_holdings'].items():
-                if h['qty'] <= 0: continue
-                curr_p = data['scores'].get(t, {}).get('price')
-                if curr_p is None or pd.isna(curr_p):
-                    curr_p = data['prices'][t].dropna().iloc[-1] if (t in data['prices'].columns and len(data['prices'][t].dropna()) > 0) else h['avg_cost']
-                pnl = (curr_p / h['avg_cost'] - 1) * 100
-                curr_atr = data['atr'][t].iloc[-1]
-                atr_stop_dist = (engine.config['atr_mult'] * curr_atr) / curr_p * 100
-                
-                if pnl < -atr_stop_dist: 
-                    to_sell.append(t)
-                    st.error(f"🔴 SELL ALL {t} (Stop Loss: {pnl:.1f}% < -{atr_stop_dist:.1f}%)")
-                elif t not in top_targets: 
-                    to_sell.append(t)
-                    st.warning(f"🟠 SELL ALL {t} (Out of Top {n_target})")
-                elif not data['scores'][t]['above_ma200']:
-                    to_sell.append(t)
-                    st.warning(f"🟠 SELL ALL {t} (Below 200 SMA)")
-            
-            if to_sell:
+            if data['to_sell']:
+                for s in data['to_sell']:
+                    st.error(f"🔴 SELL ALL **{s['ticker']}** ({s['reason']})")
                 st.caption("Use the cash from your sells to fund the BUY orders below.")
             
             # Check Buys
-            target_per = max(total_val, engine.config['initial_capital']) / n_target if n_target > 0 else 0
-            buy_candidates = [t for t in sorted_tickers if t[0] not in to_sell][:n_target]
+            for b in data['buy_orders']:
+                buy_label = "New Entry" if b['type'] == 'NEW' else "Add"
+                st.success(f"🟢 BUY ({buy_label}) **{b['ticker']}**: ${b['amount']:.2f} (~{b['shares']:.4f} shares)")
             
-            for t_rank in buy_candidates:
-                ticker = t_rank[0]
-                is_held = ticker in engine.config['my_holdings'] and engine.config['my_holdings'][ticker].get('qty', 0) > 0
-                curr_val = engine.config['my_holdings'][ticker].get('qty', 0) * data['prices'][ticker].iloc[-1] if is_held else 0
-                diff = target_per - curr_val
+            # Check Holds
+            for h in data['hold_orders']:
+                st.info(f"🔵 HOLD **{h['ticker']}** (Val: ${h['value']:.2f})")
                 
-                if not is_held:
-                    st.success(f"🟢 BUY (New Entry) **{ticker}**: ${target_per:.2f}")
-                elif diff > max(5.0, target_per * 0.10):
-                    st.success(f"🟢 BUY (Add) **{ticker}**: ${diff:.2f}")
-                elif is_held:
-                    st.info(f"🔵 HOLD **{ticker}** (Val: ${curr_val:.2f})")
+            if data['risk_tip']:
+                st.warning(f"⚠️ {data['risk_tip']}")
 
 with tab2:
     st.subheader("🏆 Momentum Rankings")
-    rank_df = pd.DataFrame.from_dict(data['scores'], orient='index').sort_values("score", ascending=False)
-    st.dataframe(rank_df[['score', 'price', 'sector', 'above_ma200']], width=1000)
+    rank_list = []
+    for ticker, d in data['sorted_ranks']:
+        rank_list.append({
+            "Ticker": ticker,
+            "Sector": d['sector'],
+            "Price": f"${d['price']:.2f}",
+            "Score": f"{d['score']:.1f}%",
+            "Conviction": f"{d['conviction']:.1f}",
+            "Above 200 SMA": "✅ Yes" if d['above_ma200'] else "❌ No"
+        })
+    rank_df = pd.DataFrame(rank_list).set_index("Ticker")
+    st.dataframe(rank_df, width=1000)
 
 with tab3:
     st.subheader("⚙️ Portfolio & Settings")

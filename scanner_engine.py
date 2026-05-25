@@ -134,12 +134,144 @@ class ScannerEngine:
         return scores
 
     def get_analysis(self):
-        """Returns a consolidated dictionary of all analysis results."""
+        """Returns a consolidated dictionary of all analysis results, including risk metrics and action plans."""
         prices, high, low = self.fetch_data()
         atr = self.calculate_atr(prices, high, low, self.config['atr_period'])
         regime, spy_price, spy_ma, dist = self.get_market_regime(prices)
         scores = self.get_momentum_scores(prices)
         
+        # Sort tickers by conviction (descending)
+        sorted_ranks = sorted(scores.items(), key=lambda x: x[1]['conviction'], reverse=True)
+        
+        # Determine number of targets based on regime
+        n_target = 2 if regime == "BULL" else 1 if regime == "VOLATILE" else 0
+        
+        # Eligible candidates must be above 200 SMA
+        eligible_candidates = [t for t, d in sorted_ranks if d['above_ma200']]
+        top_targets = eligible_candidates[:n_target]
+        
+        # Correlation matrix (tail 60 days)
+        returns = prices.pct_change().dropna()
+        corr_matrix = returns.tail(60).corr()
+        
+        # Risk profile of top targets
+        correlation = 0.0
+        same_sector = False
+        div_score = 100.0
+        risk_tip = ""
+        
+        if len(top_targets) >= 2:
+            t1, t2 = top_targets[0], top_targets[1]
+            if t1 in corr_matrix.columns and t2 in corr_matrix.columns:
+                correlation = float(corr_matrix.loc[t1, t2])
+            same_sector = scores[t1]['sector'] == scores[t2]['sector']
+            div_score = (1 - max(0, correlation)) * 100
+            if same_sector:
+                div_score *= 0.7
+                
+            if correlation > 0.7 or same_sector:
+                # Find the next eligible ticker that is NOT in the top targets
+                alternatives = [t for t in eligible_candidates if t not in top_targets]
+                if alternatives:
+                    alt_ticker = alternatives[0]
+                    risk_tip = f"{t1} and {t2} are moving together (Correlation: {correlation:.2f}) and/or have sector overlap. If you want more safety, buy {alt_ticker} instead of {t2}."
+        
+        # Build portfolio items and analyze holds
+        portfolio_items = []
+        total_value = 0.0
+        total_cost = 0.0
+        to_sell = []
+        
+        for t, h in self.config['my_holdings'].items():
+            if h['qty'] <= 0:
+                continue
+                
+            curr_price = scores.get(t, {}).get('price')
+            if curr_price is None or pd.isna(curr_price):
+                curr_price = prices[t].dropna().iloc[-1] if (t in prices.columns and len(prices[t].dropna()) > 0) else h['avg_cost']
+                
+            val = h['qty'] * curr_price
+            cost = h['qty'] * h['avg_cost']
+            total_value += val
+            total_cost += cost
+            pnl_pct = (curr_price / h['avg_cost'] - 1) * 100
+            
+            # ATR Stop
+            curr_atr = atr[t].iloc[-1] if t in atr.columns else 0.0
+            atr_stop_dist = (self.config['atr_mult'] * curr_atr) / curr_price * 100 if curr_price > 0 else 0.0
+            
+            status = "KEEP"
+            reason = ""
+            
+            if regime == "BEAR":
+                status = "SELL"
+                reason = "Bear Market"
+            elif pnl_pct < -atr_stop_dist:
+                status = "STOP"
+                reason = f"Stop Loss (ATR: -{atr_stop_dist:.1f}%)"
+            elif t not in top_targets:
+                status = "EXIT"
+                reason = f"Out of Top {n_target}"
+            elif t in scores and not scores[t]['above_ma200']:
+                status = "EXIT"
+                reason = "Below 200 SMA"
+                
+            if status in ["SELL", "EXIT", "STOP"]:
+                to_sell.append({
+                    'ticker': t,
+                    'qty': h['qty'],
+                    'reason': reason
+                })
+                
+            portfolio_items.append({
+                'ticker': t,
+                'value': val,
+                'cost': cost,
+                'pnl_pct': pnl_pct,
+                'atr_stop_dist': atr_stop_dist,
+                'status': status,
+                'reason': reason
+            })
+            
+        # Build action plan orders
+        buy_orders = []
+        hold_orders = []
+        
+        if regime != "BEAR" and n_target > 0:
+            target_total = max(total_value, self.config['initial_capital'])
+            target_per_stock = target_total / n_target
+            
+            for ticker in top_targets:
+                is_held = self.config['my_holdings'].get(ticker, {}).get('qty', 0) > 0
+                curr_price = scores.get(ticker, {}).get('price', 0.0)
+                if curr_price == 0.0:
+                    curr_price = prices[ticker].dropna().iloc[-1] if (ticker in prices.columns and len(prices[ticker].dropna()) > 0) else 0.0
+                
+                curr_val = self.config['my_holdings'].get(ticker, {}).get('qty', 0) * curr_price if is_held else 0.0
+                diff = target_per_stock - curr_val
+                
+                if not is_held:
+                    buy_orders.append({
+                        'ticker': ticker,
+                        'type': 'NEW',
+                        'amount': target_per_stock,
+                        'shares': target_per_stock / curr_price if curr_price > 0 else 0.0,
+                        'price': curr_price
+                    })
+                elif diff > max(5.0, target_per_stock * 0.10):
+                    buy_orders.append({
+                        'ticker': ticker,
+                        'type': 'ADD',
+                        'amount': diff,
+                        'shares': diff / curr_price if curr_price > 0 else 0.0,
+                        'price': curr_price
+                    })
+                else:
+                    hold_orders.append({
+                        'ticker': ticker,
+                        'value': curr_val
+                    })
+                    
         return {
             "prices": prices,
             "atr": atr,
@@ -148,5 +280,20 @@ class ScannerEngine:
             "spy_ma": spy_ma,
             "dist": dist,
             "scores": scores,
+            "sorted_ranks": sorted_ranks,
+            "n_target": n_target,
+            "top_targets": top_targets,
+            "eligible_candidates": eligible_candidates,
+            "correlation_matrix": corr_matrix,
+            "top_correlation": correlation,
+            "same_sector": same_sector,
+            "diversification_score": div_score,
+            "risk_tip": risk_tip,
+            "portfolio_items": portfolio_items,
+            "total_value": total_value,
+            "total_cost": total_cost,
+            "to_sell": to_sell,
+            "buy_orders": buy_orders,
+            "hold_orders": hold_orders,
             "timestamp": self.now.strftime('%Y-%m-%d %I:%M %p IST')
         }

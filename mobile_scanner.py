@@ -105,42 +105,36 @@ class AdaptiveScannerApp:
 
     def get_action_plan_ui(self):
         actions = []
-        n_target = 2 if self.data['regime'] == "BULL" else 1 if self.data['regime'] == "VOLATILE" else 0
-        sorted_tickers = sorted(self.data['scores'].items(), key=lambda x: x[1]['score'], reverse=True)
-        top_targets = [t for t, _ in sorted_tickers[:n_target]]
         
-        to_sell = []
-        for t, h in self.engine.config['my_holdings'].items():
-            if h['qty'] <= 0: continue
-            curr_price = self.data['prices'][t].iloc[-1]
-            pnl_pct = (curr_price / h['avg_cost'] - 1) * 100
-            
-            # ATR Stop
-            curr_atr = self.data['atr'][t].iloc[-1]
-            atr_stop_dist = (self.engine.config['atr_mult'] * curr_atr) / curr_price * 100
-            
-            reason = ""
-            if self.data['regime'] == "BEAR": reason = "Bear Market"
-            elif pnl_pct < -atr_stop_dist: reason = f"Stop Loss (ATR: -{atr_stop_dist:.1f}%)"
-            elif t not in top_targets: reason = f"Out of Top {n_target}"
-            elif not self.data['scores'][t]['above_ma200']: reason = "Below 200 SMA"
-            if reason: to_sell.append((t, reason))
-
         if self.data['regime'] == "BEAR":
             actions.append(self.action_item("SELL EVERYTHING", "Market is in Bear Regime", "red"))
         else:
-            for t, r in to_sell: actions.append(self.action_item(f"SELL {t}", r, "red"))
+            # Sells
+            for s in self.data['to_sell']:
+                actions.append(self.action_item(f"SELL {s['ticker']}", f"Exit position ({s['reason']})", "red"))
             
-            to_sell_tickers = [s[0] for s in to_sell]
-            buy_candidates = [t for t in sorted_tickers if t[0] not in to_sell_tickers][:n_target]
+            # Buys
+            for b in self.data['buy_orders']:
+                buy_label = "New Entry" if b['type'] == 'NEW' else "Add"
+                actions.append(self.action_item(f"BUY ({buy_label}) {b['ticker']}", f"Invest ${b['amount']:.2f} (~{b['shares']:.4f} shares)", "green"))
             
-            for t_rank in buy_candidates:
-                ticker = t_rank[0]
-                is_held = self.engine.config['my_holdings'].get(ticker, {}).get('qty', 0) > 0
-                if not is_held: actions.append(self.action_item(f"BUY {ticker}", "Top momentum ranking", "green"))
-                else: actions.append(self.action_item(f"HOLD {ticker}", "Currently in top target", "cyan"))
+            # Holds
+            for h in self.data['hold_orders']:
+                actions.append(self.action_item(f"HOLD {h['ticker']}", f"Current value: ${h['value']:.2f}", "cyan"))
+                
+            # Risk Tip
+            if self.data['risk_tip']:
+                actions.append(ft.Container(
+                    content=ft.ListTile(
+                        leading=ft.Icon("warning", color="orange"),
+                        title=ft.Text("Risk Warning", weight="bold", color="orange"),
+                        subtitle=ft.Text(self.data['risk_tip'], size=12, color="white60"),
+                    ),
+                    bgcolor="#1E293B", border_radius=12, margin=ft.Margin(0, 0, 0, 10)
+                ))
 
-        if not actions: actions.append(ft.Text("No actions needed.", color="white60"))
+        if not actions: 
+            actions.append(ft.Text("No actions needed.", color="white60"))
         return ft.Column(actions)
 
     def action_item(self, title, subtitle, color):
@@ -154,15 +148,28 @@ class AdaptiveScannerApp:
         )
 
     def show_rankings(self):
-        sorted_tickers = sorted(self.data['scores'].items(), key=lambda x: x[1]['score'], reverse=True)
         items = [ft.Text("Momentum Rankings", size=28, weight="bold")]
-        for i, (t, d) in enumerate(sorted_tickers, 1):
-            color = "green" if i <= 2 else "orange" if i <= 4 else "white60"
+        top_targets = self.data['top_targets']
+        
+        for i, (t, d) in enumerate(self.data['sorted_ranks'], 1):
+            if t in top_targets:
+                color = "green"
+            elif t in self.data['eligible_candidates']:
+                color = "orange"
+            else:
+                color = "white60"
+                
             items.append(ft.Container(
                 content=ft.Row([
                     ft.Text(str(i), size=18, weight="bold", width=30),
-                    ft.Column([ft.Text(t, size=18, weight="bold"), ft.Text(d['sector'], size=12, color="white60")], expand=True),
-                    ft.Column([ft.Text(f"{d['conviction']:.1f}", size=18, weight="bold", color=color, text_align="right"), ft.Text("Score", size=12, color="white60", text_align="right")]),
+                    ft.Column([
+                        ft.Text(t, size=18, weight="bold"), 
+                        ft.Text(d['sector'], size=12, color="white60")
+                    ], expand=True),
+                    ft.Column([
+                        ft.Text(f"{d['conviction']:.1f}", size=18, weight="bold", color=color, text_align="right"), 
+                        ft.Text(f"Score: {d['score']:.1f}%", size=12, color="white60", text_align="right")
+                    ]),
                 ]),
                 padding=15, bgcolor="#1E293B", border_radius=12, margin=ft.Margin(0, 0, 0, 10)
             ))
@@ -176,18 +183,29 @@ class AdaptiveScannerApp:
                 ft.Container(content=ft.Icon("add_circle", color="cyan"), on_click=lambda _: self.edit_holding_dialog(), padding=10)
             ], alignment="spaceBetween"),
         ]
-        total_val = 0
-        for t, h in self.engine.config['my_holdings'].items():
-            if h['qty'] <= 0: continue
-            curr_price = self.data['prices'][t].iloc[-1]
-            val = h['qty'] * curr_price
-            total_val += val
-            pnl = (curr_price / h['avg_cost'] - 1) * 100
+        
+        for item in self.data['portfolio_items']:
+            t = item['ticker']
+            val = item['value']
+            pnl = item['pnl_pct']
             pnl_color = "green" if pnl >= 0 else "red"
+            
+            qty = self.engine.config['my_holdings'].get(t, {}).get('qty', 0)
+            status_color = "green" if item['status'] == "KEEP" else "red" if item['status'] in ["SELL", "STOP"] else "orange"
+            
             items.append(ft.Container(
                 content=ft.Row([
-                    ft.Column([ft.Text(t, size=20, weight="bold"), ft.Text(f"{h['qty']:.4f} shares", size=12, color="white60")], expand=True),
-                    ft.Column([ft.Text(f"${val:.2f}", size=18, weight="bold", text_align="right"), ft.Text(f"{pnl:+.1f}%", size=14, weight="bold", color=pnl_color, text_align="right")]),
+                    ft.Column([
+                        ft.Text(t, size=20, weight="bold"), 
+                        ft.Text(f"{qty:.4f} shares | ATR Stop: -{item['atr_stop_dist']:.1f}%", size=12, color="white60")
+                    ], expand=True),
+                    ft.Column([
+                        ft.Text(f"${val:.2f}", size=18, weight="bold", text_align="right"), 
+                        ft.Row([
+                            ft.Text(f"{pnl:+.1f}%", size=12, weight="bold", color=pnl_color),
+                            ft.Text(f" | {item['status']}", size=12, weight="bold", color=status_color)
+                        ], alignment="end")
+                    ], horizontal_alignment="end"),
                     ft.PopupMenuButton(items=[
                         ft.PopupMenuItem(content="Edit", icon="edit", on_click=lambda _, ticker=t: self.edit_holding_dialog(ticker)),
                         ft.PopupMenuItem(content="Delete", icon="delete", on_click=lambda _, ticker=t: self.delete_holding(ticker)),
@@ -195,7 +213,25 @@ class AdaptiveScannerApp:
                 ]),
                 padding=15, bgcolor="#1E293B", border_radius=12, margin=ft.Margin(0, 0, 0, 10)
             ))
-        items.insert(1, ft.Text(f"Total Value: ${total_val:.2f}", size=20, weight="bold", color="cyan"))
+            
+        items.insert(1, ft.Text(f"Total Value: ${self.data['total_value']:.2f}", size=20, weight="bold", color="cyan"))
+        
+        # Add Detailed Risk Card if there are top targets
+        if len(self.data['top_targets']) >= 2:
+            t1, t2 = self.data['top_targets'][0], self.data['top_targets'][1]
+            div_color = "red" if self.data['diversification_score'] < 30 else "orange" if self.data['diversification_score'] < 70 else "green"
+            
+            items.append(ft.Container(
+                content=ft.Column([
+                    ft.Text("Risk Profile", size=18, weight="bold", color="white"),
+                    ft.Divider(height=10, color="white24"),
+                    ft.Row([ft.Text("Correlation:", size=14, color="white60"), ft.Text(f"{self.data['top_correlation']:.2f}", size=14, weight="bold")]),
+                    ft.Row([ft.Text("Sector Match:", size=14, color="white60"), ft.Text("MATCH" if self.data['same_sector'] else "NO", size=14, weight="bold", color="red" if self.data['same_sector'] else "green")]),
+                    ft.Row([ft.Text("Diversification Score:", size=14, color="white60"), ft.Text(f"{self.data['diversification_score']:.0f}/100", size=14, weight="bold", color=div_color)]),
+                ], spacing=10),
+                padding=20, bgcolor="#1E293B", border_radius=12, margin=ft.Margin(0, 10, 0, 0)
+            ))
+            
         self.main_screen.content.controls = items
         self.page.update()
 
@@ -224,13 +260,26 @@ class AdaptiveScannerApp:
         self.show_portfolio()
 
     def show_settings(self):
+        cap_field = ft.TextField(label="Initial Capital", value=str(self.engine.config['initial_capital']), prefix_text="$")
+        atr_field = ft.TextField(label="ATR Multiplier", value=str(self.engine.config['atr_mult']))
+        
+        def save_settings(e):
+            try:
+                self.engine.config['initial_capital'] = float(cap_field.value)
+                self.engine.config['atr_mult'] = float(atr_field.value)
+                self.engine.save_config()
+                self.page.show_snack_bar(ft.SnackBar(ft.Text("Settings Saved!")))
+                self.refresh_data()
+            except ValueError:
+                self.page.show_snack_bar(ft.SnackBar(ft.Text("Error: Please enter valid numbers.")))
+
         self.main_screen.content.controls = [
             ft.Text("Settings", size=28, weight="bold"),
             ft.Container(
                 content=ft.Column([
-                    ft.TextField(label="Initial Capital", value=str(self.engine.config['initial_capital']), prefix_text="$"),
-                    ft.TextField(label="ATR Multiplier", value=str(self.engine.config['atr_mult'])),
-                    ft.ElevatedButton("Save Changes", icon="save", on_click=lambda _: self.page.show_snack_bar(ft.SnackBar(ft.Text("Settings Saved!")))),
+                    cap_field,
+                    atr_field,
+                    ft.ElevatedButton("Save Changes", icon="save", on_click=save_settings),
                 ], spacing=20),
                 padding=20, margin=ft.Margin(0, 20, 0, 0)
             )

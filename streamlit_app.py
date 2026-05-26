@@ -25,6 +25,11 @@ if 'engine' not in st.session_state:
 
 engine = st.session_state.engine
 
+# Ensure stale cache cleared on first run (handles schema changes like missing n_target)
+if 'cache_cleared' not in st.session_state:
+    st.cache_data.clear()
+    st.session_state.cache_cleared = True
+
 # ==========================================================
 # 🏗️ DATA FETCHING
 # ==========================================================
@@ -68,8 +73,9 @@ with tab1:
     st.markdown("---")
     
      # Strategy Logic (Pre-calculated in engine)
-    n_target = data['n_target']
-    top_targets = data['top_targets']
+    # Safely retrieve n_target, default to 0 if not present (e.g., stale cache)
+    n_target = data.get('n_target', 0)
+    top_targets = data.get('top_targets', [])
     
     col_left, col_right = st.columns([2, 1])
     

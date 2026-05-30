@@ -70,6 +70,9 @@ with tab1:
     pnl_pct = (total_val / total_cost - 1) * 100 if total_cost > 0 else 0
     m3.metric("Portfolio Value", f"${total_val:.2f}", delta=f"{pnl_pct:+.1f}%")
 
+    if data['regime'] == "VOLATILE":
+        st.warning("⚠️ **High Volatility Detected** (ATR Spike or below MA). Reduced position sizing is recommended.")
+
     st.markdown("---")
     
      # Strategy Logic (Pre-calculated in engine)

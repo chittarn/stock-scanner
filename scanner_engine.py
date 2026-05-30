@@ -26,7 +26,7 @@ class ScannerEngine:
         else:
             # Fallback defaults
             self.config = {
-                "universe": ["NVDA", "MSFT", "QQQ", "AMZN", "SMH", "CAT", "XLE", "WMT", "GLD"],
+                "universe": ["QQQ", "NVDA", "AMZN", "CAT", "BRK-B", "XLF", "JPM", "XLV", "LLY", "XLE", "WMT", "LMT", "GLD"],
                 "initial_capital": 300.0,
                 "ma_period": 200,
                 "atr_period": 14,
@@ -48,7 +48,8 @@ class ScannerEngine:
             self.save_config()
 
     def fetch_data(self):
-        symbols = self.config['universe'] + ['SPY']
+        holdings_symbols = list(self.config['my_holdings'].keys())
+        symbols = list(set(self.config['universe'] + holdings_symbols + ['SPY']))
         data = yf.download(symbols, period="1y", auto_adjust=True, progress=False)
         if data.empty:
             raise ValueError("No market data downloaded from yfinance. Please check your internet connection.")
@@ -59,7 +60,8 @@ class ScannerEngine:
 
     def calculate_atr(self, close, high, low, period=14):
         tr = pd.DataFrame(index=close.index)
-        for t in self.config['universe']:
+        all_symbols = list(set(self.config['universe'] + list(self.config['my_holdings'].keys())))
+        for t in all_symbols:
             if t in close.columns:
                 h_l = high[t] - low[t]
                 h_pc = abs(high[t] - close[t].shift(1))
@@ -68,7 +70,7 @@ class ScannerEngine:
         atr = tr.rolling(window=period).mean().ffill().bfill()
         return atr
 
-    def get_market_regime(self, prices):
+    def get_market_regime(self, prices, atr=None):
         if 'SPY' not in prices.columns:
             return "BULL", 0.0, 0.0, 0.0
             
@@ -93,15 +95,25 @@ class ScannerEngine:
         else:
             regime = "BULL"
             
+        # ATR Volatility check
+        if atr is not None and 'SPY' in atr.columns:
+            spy_atr = atr['SPY'].dropna()
+            if len(spy_atr) > 20:
+                recent_atr = spy_atr.iloc[-1]
+                avg_atr = spy_atr.tail(20).mean()
+                if recent_atr > avg_atr * 1.5:
+                    regime = "VOLATILE"
+            
         return regime, spy_price, spy_ma, dist_pct
 
     def get_momentum_scores(self, prices):
         w6, w3 = 0.6, 0.4
         sectors = {
-            "NVDA": "Semiconductors", "SMH": "Semiconductors", "AMD": "Semiconductors",
-            "AVGO": "Semiconductors", "QQQ": "Index (Tech)", "AMZN": "Consumer Disc",
-            "GOOGL": "Communication", "CAT": "Industrials", "XLE": "Energy",
-            "GLD": "Gold", "WMT": "Consumer Staples", "MSFT": "Software"
+            "QQQ": "Index (Tech)", "NVDA": "Semiconductors", "AMZN": "Consumer Disc",
+            "CAT": "Industrials", "BRK-B": "Financials", "XLF": "Financials",
+            "JPM": "Financials", "XLV": "Healthcare", "LLY": "Healthcare",
+            "XLE": "Energy", "WMT": "Consumer Staples", "LMT": "Defense", 
+            "GLD": "Gold", "MSFT": "Software", "GOOGL": "Communication", "AMD": "Semiconductors"
         }
         
         scores = {}
@@ -137,7 +149,7 @@ class ScannerEngine:
         """Returns a consolidated dictionary of all analysis results, including risk metrics and action plans."""
         prices, high, low = self.fetch_data()
         atr = self.calculate_atr(prices, high, low, self.config['atr_period'])
-        regime, spy_price, spy_ma, dist = self.get_market_regime(prices)
+        regime, spy_price, spy_ma, dist = self.get_market_regime(prices, atr)
         scores = self.get_momentum_scores(prices)
         
         # Sort tickers by conviction (descending)
@@ -196,9 +208,23 @@ class ScannerEngine:
             total_cost += cost
             pnl_pct = (curr_price / h['avg_cost'] - 1) * 100
             
-            # ATR Stop
+            # ATR Stop & Profit Protection
             curr_atr = atr[t].iloc[-1] if t in atr.columns else 0.0
-            atr_stop_dist = (self.config['atr_mult'] * curr_atr) / curr_price * 100 if curr_price > 0 else 0.0
+            
+            current_atr_mult = self.config['atr_mult']
+            is_profit_protected = False
+            
+            if pnl_pct > 15.0:
+                current_atr_mult = 1.5
+                is_profit_protected = True
+                
+            stop_price = h['avg_cost'] - (current_atr_mult * curr_atr)
+            
+            if is_profit_protected:
+                recent_high = prices[t].dropna().tail(20).max() if (t in prices.columns) else curr_price
+                stop_price = max(stop_price, recent_high - (current_atr_mult * curr_atr))
+                
+            atr_stop_dist = ((curr_price - stop_price) / curr_price) * 100 if curr_price > 0 else 0.0
             
             status = "KEEP"
             reason = ""
@@ -206,9 +232,9 @@ class ScannerEngine:
             if regime == "BEAR":
                 status = "SELL"
                 reason = "Bear Market"
-            elif pnl_pct < -atr_stop_dist:
+            elif curr_price < stop_price:
                 status = "STOP"
-                reason = f"Stop Loss (ATR: -{atr_stop_dist:.1f}%)"
+                reason = f"{'Profit Protection' if is_profit_protected else 'Stop Loss'} (ATR Break)"
             elif t not in top_targets:
                 status = "EXIT"
                 reason = f"Out of Top {n_target}"

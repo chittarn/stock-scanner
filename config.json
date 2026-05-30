@@ -1,14 +1,18 @@
 {
     "universe": [
-        "NVDA",
-        "AMD",
         "QQQ",
+        "NVDA",
         "AMZN",
-        "SMH",
         "CAT",
+        "BRK-B",
+        "XLF",
+        "JPM",
+        "XLV",
+        "LLY",
         "XLE",
-        "GOOGL",
-        "AVGO"
+        "WMT",
+        "LMT",
+        "GLD"
     ],
     "initial_capital": 300.0,
     "ma_period": 200,

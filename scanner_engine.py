@@ -82,15 +82,17 @@ class ScannerEngine:
             
         spy_price = valid_spy.iloc[-1] if len(valid_spy) > 0 else 0.0
         spy_ma = valid_spy.rolling(window=ma_period).mean().iloc[-1] if len(valid_spy) > 0 else 0.0
+        spy_ma50 = valid_spy.rolling(window=min(50, len(valid_spy))).mean().iloc[-1] if len(valid_spy) > 0 else 0.0
         
         if spy_ma == 0:
             return "BULL", spy_price, 0.0, 0.0
             
         dist_pct = (spy_price / spy_ma - 1) * 100
         
-        if dist_pct < -5:
+        # New Faster Regime Filter
+        if spy_price < spy_ma:
             regime = "BEAR"
-        elif dist_pct < 0:
+        elif spy_price < spy_ma50:
             regime = "VOLATILE"
         else:
             regime = "BULL"
@@ -101,7 +103,7 @@ class ScannerEngine:
             if len(spy_atr) > 20:
                 recent_atr = spy_atr.iloc[-1]
                 avg_atr = spy_atr.tail(20).mean()
-                if recent_atr > avg_atr * 1.5:
+                if recent_atr > avg_atr * 1.5 and regime != "BEAR":
                     regime = "VOLATILE"
             
         return regime, spy_price, spy_ma, dist_pct
@@ -129,12 +131,20 @@ class ScannerEngine:
                 
                 ret3m = (curr / p3m - 1) * 100 if p3m > 0 else 0
                 ret6m = (curr / p6m - 1) * 100 if p6m > 0 else 0
-                score = (ret6m * w6) + (ret3m * w3)
+                
+                # Volatility-Adjusted Momentum
+                # Calculate annualized volatility based on 60-day standard deviation
+                returns = valid_prices.tail(60).pct_change().dropna()
+                vol = returns.std() * np.sqrt(252) if not returns.empty else 0.01
+                vol = max(vol, 0.01) # Avoid division by zero
+                
+                raw_score = (ret6m * w6) + (ret3m * w3)
+                score = raw_score / vol # Normalize by volatility
                 
                 ma_len = min(200, len(valid_prices))
                 ma200 = valid_prices.rolling(window=ma_len).mean().iloc[-1]
                 above_ma200 = curr > ma200
-                conviction = score * 1.2 if above_ma200 else score * 0.5
+                conviction = score # Removed the 0.5 logic since below 200 SMA is filtered out anyway
                 
                 scores[t] = {
                     'score': score,
@@ -208,7 +218,7 @@ class ScannerEngine:
             total_cost += cost
             pnl_pct = (curr_price / h['avg_cost'] - 1) * 100
             
-            # ATR Stop & Profit Protection
+            # ATR Stop & Profit Protection (True Trailing Stop)
             curr_atr = atr[t].iloc[-1] if t in atr.columns else 0.0
             
             current_atr_mult = self.config['atr_mult']
@@ -217,12 +227,14 @@ class ScannerEngine:
             if pnl_pct > 15.0:
                 current_atr_mult = 1.5
                 is_profit_protected = True
-                
-            stop_price = h['avg_cost'] - (current_atr_mult * curr_atr)
             
-            if is_profit_protected:
-                recent_high = prices[t].dropna().tail(20).max() if (t in prices.columns) else curr_price
-                stop_price = max(stop_price, recent_high - (current_atr_mult * curr_atr))
+            # Find the highest price recently (approx 3 months) to trail from
+            recent_high = prices[t].dropna().tail(60).max() if (t in prices.columns) else curr_price
+            
+            # If the recent high is somehow lower than average cost (e.g., bought yesterday), use avg_cost
+            highest_price = max(recent_high, h['avg_cost'])
+            
+            stop_price = highest_price - (current_atr_mult * curr_atr)
                 
             atr_stop_dist = ((curr_price - stop_price) / curr_price) * 100 if curr_price > 0 else 0.0
             

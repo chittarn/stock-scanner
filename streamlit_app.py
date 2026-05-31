@@ -33,8 +33,9 @@ if 'cache_cleared' not in st.session_state:
 # ==========================================================
 # 🏗️ DATA FETCHING
 # ==========================================================
-@st.cache_data(ttl=3600)
 def get_analysis_results():
+    # Clear cache each time the app loads to avoid stale data on deployed instances
+    st.cache_data.clear()
     return engine.get_analysis()
 
 with st.spinner("Analyzing Market Data..."):

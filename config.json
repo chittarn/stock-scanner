@@ -19,13 +19,13 @@
     "atr_period": 14,
     "atr_mult": 2.5,
     "my_holdings": {
-        "SMH": {
-            "qty": 0.34178297,
-            "avg_cost": 497.16
+        "QQQ": {
+            "qty": 0.27570251,
+            "avg_cost": 739.24
         },
-        "AMD": {
-            "qty": 0.4101592,
-            "avg_cost": 464.00
+        "CAT": {
+            "qty": 0.23447121,
+            "avg_cost": 871.75
         }
     }
 }

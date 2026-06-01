@@ -288,43 +288,53 @@ class ScannerEngine:
             })
             
         # Build action plan orders
+        # Identify tickers that triggered a SELL/STOP/EXIT this run
+        stopped_tickers = {item['ticker'] for item in portfolio_items if item['status'] in ["SELL", "STOP", "EXIT"]}
         buy_orders = []
         hold_orders = []
         
         if regime != "BEAR" and n_target > 0:
-            target_total = max(total_value, self.config['initial_capital'])
-            target_per_stock = target_total / n_target
-            
-            for ticker in top_targets:
-                is_held = self.config['my_holdings'].get(ticker, {}).get('qty', 0) > 0
-                curr_price = scores.get(ticker, {}).get('price', 0.0)
-                if curr_price == 0.0:
-                    curr_price = prices[ticker].dropna().iloc[-1] if (ticker in prices.columns and len(prices[ticker].dropna()) > 0) else 0.0
-                
-                curr_val = self.config['my_holdings'].get(ticker, {}).get('qty', 0) * curr_price if is_held else 0.0
-                diff = target_per_stock - curr_val
-                
-                if not is_held:
-                    buy_orders.append({
-                        'ticker': ticker,
-                        'type': 'NEW',
-                        'amount': target_per_stock,
-                        'shares': target_per_stock / curr_price if curr_price > 0 else 0.0,
-                        'price': curr_price
-                    })
-                elif diff > max(5.0, target_per_stock * 0.10):
-                    buy_orders.append({
-                        'ticker': ticker,
-                        'type': 'ADD',
-                        'amount': diff,
-                        'shares': diff / curr_price if curr_price > 0 else 0.0,
-                        'price': curr_price
-                    })
-                else:
-                    hold_orders.append({
-                        'ticker': ticker,
-                        'value': curr_val
-                    })
+            # Exclude any ticker we are exiting this round from buying back
+            filtered_targets = [t for t in top_targets if t not in stopped_tickers]
+            # Adjust target count if we lost some candidates
+            n_target = len(filtered_targets)
+            if n_target == 0:
+                # Nothing to buy this round
+                pass
+            else:
+                target_total = max(total_value, self.config['initial_capital'])
+                target_per_stock = target_total / n_target
+
+                for ticker in filtered_targets:
+                    is_held = self.config['my_holdings'].get(ticker, {}).get('qty', 0) > 0
+                    curr_price = scores.get(ticker, {}).get('price', 0.0)
+                    if curr_price == 0.0:
+                        curr_price = prices[ticker].dropna().iloc[-1] if (ticker in prices.columns and len(prices[ticker].dropna()) > 0) else 0.0
+
+                    curr_val = self.config['my_holdings'].get(ticker, {}).get('qty', 0) * curr_price if is_held else 0.0
+                    diff = target_per_stock - curr_val
+
+                    if not is_held:
+                        buy_orders.append({
+                            'ticker': ticker,
+                            'type': 'NEW',
+                            'amount': target_per_stock,
+                            'shares': target_per_stock / curr_price if curr_price > 0 else 0.0,
+                            'price': curr_price
+                        })
+                    elif diff > max(5.0, target_per_stock * 0.10):
+                        buy_orders.append({
+                            'ticker': ticker,
+                            'type': 'ADD',
+                            'amount': diff,
+                            'shares': diff / curr_price if curr_price > 0 else 0.0,
+                            'price': curr_price
+                        })
+                    else:
+                        hold_orders.append({
+                            'ticker': ticker,
+                            'value': curr_val
+                        })
                     
         return {
             "prices": prices,

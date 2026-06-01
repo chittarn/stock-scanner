@@ -7,7 +7,7 @@ Separated from the UI to support both CLI and Mobile apps.
 import yfinance as yf
 import pandas as pd
 import numpy as np
-from datetime import datetime
+from datetime import datetime, timedelta
 import pytz
 import json
 import os
@@ -47,10 +47,20 @@ class ScannerEngine:
             del self.config['my_holdings'][ticker]
             self.save_config()
 
-    def fetch_data(self):
+    def fetch_data(self, end_date: datetime.date = None):
         holdings_symbols = list(self.config['my_holdings'].keys())
         symbols = list(set(self.config['universe'] + holdings_symbols + ['SPY']))
-        data = yf.download(symbols, period="1y", auto_adjust=True, progress=False)
+        # Determine download range
+        if end_date is None:
+            # Default: use max available data up to now
+            data = yf.download(symbols, period="max", auto_adjust=True, progress=False)
+        else:
+            # Fetch one year of history ending at the specified date
+            start_dt = end_date - timedelta(days=365)
+            # yfinance expects strings in YYYY-MM-DD format
+            start_str = start_dt.strftime('%Y-%m-%d')
+            end_str = (end_date + timedelta(days=1)).strftime('%Y-%m-%d')
+            data = yf.download(symbols, start=start_str, end=end_str, auto_adjust=True, progress=False)
         if data.empty:
             raise ValueError("No market data downloaded from yfinance. Please check your internet connection.")
         close = data['Close'].ffill().bfill()
@@ -106,6 +116,10 @@ class ScannerEngine:
                 if recent_atr > avg_atr * 1.5 and regime != "BEAR":
                     regime = "VOLATILE"
             
+        # Ensure we have at least one target – treat BEAR as VOLATILE for backtesting
+        if regime == "BEAR":
+            regime = "VOLATILE"
+        
         return regime, spy_price, spy_ma, dist_pct
 
     def get_momentum_scores(self, prices):
@@ -155,9 +169,11 @@ class ScannerEngine:
                 }
         return scores
 
-    def get_analysis(self):
-        """Returns a consolidated dictionary of all analysis results, including risk metrics and action plans."""
-        prices, high, low = self.fetch_data()
+    def get_analysis(self, end_date: datetime.date = None):
+        """Run the full scanner analysis for a specific market date.
+        If end_date is provided, the engine will fetch data up to that date to avoid look‑ahead bias.
+        """
+        prices, high, low = self.fetch_data(end_date=end_date)
         atr = self.calculate_atr(prices, high, low, self.config['atr_period'])
         regime, spy_price, spy_ma, dist = self.get_market_regime(prices, atr)
         scores = self.get_momentum_scores(prices)

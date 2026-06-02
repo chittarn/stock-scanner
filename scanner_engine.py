@@ -38,8 +38,17 @@ class ScannerEngine:
         with open(self.config_path, 'w') as f:
             json.dump(self.config, f, indent=4)
 
-    def update_holding(self, ticker, qty, avg_cost):
-        self.config['my_holdings'][ticker] = {"qty": float(qty), "avg_cost": float(avg_cost)}
+    def update_holding(self, ticker, qty, avg_cost, entry_date=None):
+        existing = self.config['my_holdings'].get(ticker, {})
+        holding = {"qty": float(qty), "avg_cost": float(avg_cost)}
+        # Preserve or set entry_date for trailing stop calculation
+        if entry_date:
+            holding["entry_date"] = entry_date
+        elif 'entry_date' in existing:
+            holding["entry_date"] = existing["entry_date"]
+        else:
+            holding["entry_date"] = datetime.now().strftime('%Y-%m-%d')
+        self.config['my_holdings'][ticker] = holding
         self.save_config()
 
     def delete_holding(self, ticker):
@@ -116,9 +125,6 @@ class ScannerEngine:
                 if recent_atr > avg_atr * 1.5 and regime != "BEAR":
                     regime = "VOLATILE"
             
-        # Ensure we have at least one target – treat BEAR as VOLATILE for backtesting
-        if regime == "BEAR":
-            regime = "VOLATILE"
         
         return regime, spy_price, spy_ma, dist_pct
 
@@ -244,8 +250,18 @@ class ScannerEngine:
                 current_atr_mult = 1.5
                 is_profit_protected = True
             
-            # Find the highest price recently (approx 3 months) to trail from
-            recent_high = prices[t].dropna().tail(60).max() if (t in prices.columns) else curr_price
+            # Find the highest price since entry for a true trailing stop
+            entry_date_str = h.get('entry_date')
+            if entry_date_str and t in prices.columns:
+                try:
+                    entry_dt = pd.to_datetime(entry_date_str)
+                    prices_since_entry = prices[t].loc[entry_dt:].dropna()
+                    recent_high = prices_since_entry.max() if len(prices_since_entry) > 0 else curr_price
+                except (ValueError, KeyError):
+                    recent_high = prices[t].dropna().tail(252).max() if (t in prices.columns) else curr_price
+            else:
+                # Fallback for holdings without entry_date: use 1 year lookback
+                recent_high = prices[t].dropna().tail(252).max() if (t in prices.columns) else curr_price
             
             # If the recent high is somehow lower than average cost (e.g., bought yesterday), use avg_cost
             highest_price = max(recent_high, h['avg_cost'])

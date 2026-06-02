@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """
-ADAPTIVE MOMENTUM BACKTEST (Refined) – Low Turnover Strategy
-- 6-month (0.6) + 3-month (0.4) Weighted Momentum
+ADAPTIVE MOMENTUM BACKTEST (Aligned with Live Scanner)
+- Volatility-Adjusted Momentum: (6M*0.6 + 3M*0.4) / annualized_vol
+- Regime Detection: SPY vs 200/50 SMA + ATR volatility check
 - Hysteresis: Buy Top 2, Sell if > Rank 4
 - Trend Filter: Stock must be above 200-day SMA to buy
+- Universe: Loaded from config.json (matches live scanner)
 - Fees: 0.3% per trade
 """
 
@@ -12,6 +14,8 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 import argparse
+import json
+import os
 import warnings
 from rich.console import Console
 from rich.table import Table
@@ -19,7 +23,7 @@ from rich.table import Table
 warnings.filterwarnings('ignore')
 
 # Strategy Parameters
-UNIVERSE = ["NVDA", "MSFT", "QQQ", "AMZN", "SMH", "CAT", "XLE", "WMT", "GLD"]
+DEFAULT_UNIVERSE = ["NVDA", "MSFT", "QQQ", "AMZN", "SMH", "CAT", "XLE", "WMT", "GLD"]
 MA_PERIOD = 200
 ATR_PERIOD = 14
 ATR_MULT = 2.5
@@ -29,7 +33,7 @@ W6 = 0.6
 W3 = 0.4
 
 class AdaptiveBacktest:
-    def __init__(self, start_date, end_date=None, initial_capital=300.0):
+    def __init__(self, start_date, end_date=None, initial_capital=300.0, config_path="config.json"):
         self.console = Console()
         self.start = start_date
         # Buffer to calculate MA and Momentum
@@ -37,6 +41,16 @@ class AdaptiveBacktest:
         self.data_start = buffer_start.strftime('%Y-%m-%d')
         self.data_end = end_date or datetime.now().strftime('%Y-%m-%d')
         self.display_start = pd.to_datetime(start_date)
+        
+        # Load universe from config to match live scanner
+        if os.path.exists(config_path):
+            with open(config_path, 'r') as f:
+                config = json.load(f)
+            self.universe = config.get('universe', DEFAULT_UNIVERSE)
+            self.console.print(f"[cyan]Loaded universe from {config_path}: {len(self.universe)} tickers[/cyan]")
+        else:
+            self.universe = DEFAULT_UNIVERSE
+            self.console.print(f"[yellow]Config not found, using default universe[/yellow]")
         
         self.capital = initial_capital
         self.cash = initial_capital
@@ -46,44 +60,72 @@ class AdaptiveBacktest:
         
     def fetch_data(self):
         self.console.print(f"[cyan]Fetch: Data from {self.data_start} to {self.data_end}...[/cyan]")
-        symbols = UNIVERSE + ['SPY']
+        symbols = list(set(self.universe + ['SPY']))
         data = yf.download(symbols, start=self.data_start, end=self.data_end, auto_adjust=True, progress=False)
         self.prices = data['Close'].ffill()
         self.high = data['High'].ffill()
         self.low = data['Low'].ffill()
         
-        # Precompute indicators
+        # Precompute indicators (matching live scanner)
         self.spy_ma = self.prices['SPY'].rolling(window=MA_PERIOD).mean()
+        self.spy_ma50 = self.prices['SPY'].rolling(window=50).mean()
         self.mas = self.prices.rolling(window=MA_PERIOD).mean()
         
         # ATR Calculation
         self.atrs = pd.DataFrame(index=self.prices.index)
-        for t in UNIVERSE:
+        for t in self.universe:
             if t in self.prices.columns:
                 h_l = self.high[t] - self.low[t]
                 h_pc = abs(self.high[t] - self.prices[t].shift(1))
                 l_pc = abs(self.low[t] - self.prices[t].shift(1))
                 tr = pd.concat([h_l, h_pc, l_pc], axis=1).max(axis=1)
                 self.atrs[t] = tr.rolling(window=ATR_PERIOD).mean()
-                
+        
+        # SPY ATR for regime volatility check
+        if 'SPY' in self.prices.columns:
+            h_l = self.high['SPY'] - self.low['SPY']
+            h_pc = abs(self.high['SPY'] - self.prices['SPY'].shift(1))
+            l_pc = abs(self.low['SPY'] - self.prices['SPY'].shift(1))
+            tr = pd.concat([h_l, h_pc, l_pc], axis=1).max(axis=1)
+            self.spy_atr = tr.rolling(window=ATR_PERIOD).mean()
+        
         self.console.print(f"[green]OK: Data loaded: {len(self.prices)} days[/green]")
 
     def get_regime(self, date):
+        """Regime detection aligned with live scanner logic."""
         spy_price = self.prices['SPY'].loc[date]
-        ma = self.spy_ma.loc[date]
-        if pd.isna(ma): return 'BULL'
-        dist = (spy_price / ma - 1) * 100
-        if dist < -5: return 'BEAR'
-        elif dist < 0: return 'VOLATILE'
-        return 'BULL'
+        ma200 = self.spy_ma.loc[date]
+        ma50 = self.spy_ma50.loc[date]
+        if pd.isna(ma200): return 'BULL'
+        
+        # Match live scanner: price vs MA comparison (not distance-based)
+        if spy_price < ma200:
+            regime = 'BEAR'
+        elif not pd.isna(ma50) and spy_price < ma50:
+            regime = 'VOLATILE'
+        else:
+            regime = 'BULL'
+        
+        # ATR volatility check (matches live scanner)
+        if hasattr(self, 'spy_atr'):
+            idx = self.prices.index.get_loc(date)
+            if idx >= 20:
+                spy_atr_val = self.spy_atr.iloc[idx]
+                if not pd.isna(spy_atr_val):
+                    avg_atr = self.spy_atr.iloc[idx-20:idx].mean()
+                    if spy_atr_val > avg_atr * 1.5 and regime != 'BEAR':
+                        regime = 'VOLATILE'
+        
+        return regime
 
     def get_rankings(self, date):
+        """Volatility-adjusted momentum scoring aligned with live scanner."""
         idx = self.prices.index.get_loc(date)
         p3m_idx = max(0, idx - 63)
         p6m_idx = max(0, idx - 126)
         
         scores = {}
-        for t in UNIVERSE:
+        for t in self.universe:
             if t in self.prices.columns:
                 curr = self.prices[t].loc[date]
                 p3m = self.prices[t].iloc[p3m_idx]
@@ -91,12 +133,20 @@ class AdaptiveBacktest:
                 
                 ret3m = (curr / p3m - 1) * 100 if p3m > 0 else 0
                 ret6m = (curr / p6m - 1) * 100 if p6m > 0 else 0
-                score = (ret6m * W6) + (ret3m * W3)
+                raw_score = (ret6m * W6) + (ret3m * W3)
+                
+                # Volatility-adjusted momentum (matches live scanner)
+                start_idx = max(0, idx - 60)
+                returns = self.prices[t].iloc[start_idx:idx+1].pct_change().dropna()
+                vol = returns.std() * np.sqrt(252) if len(returns) > 1 else 0.01
+                vol = max(vol, 0.01)
+                score = raw_score / vol
                 
                 ma = self.mas[t].loc[date]
                 above_ma = curr > ma if not pd.isna(ma) else True
                 
-                conviction = score * 1.2 if above_ma else score * 0.5
+                # Conviction equals score (matches live scanner)
+                conviction = score
                 scores[t] = {'score': score, 'above_ma': above_ma, 'conviction': conviction}
         
         sorted_ranks = sorted(scores.items(), key=lambda x: x[1]['conviction'], reverse=True)
@@ -246,9 +296,10 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--start', default='2020-01-01')
     parser.add_argument('--capital', type=float, default=300.0)
+    parser.add_argument('--config', default='config.json', help='Path to config.json for universe')
     args = parser.parse_args()
     
-    bt = AdaptiveBacktest(args.start, initial_capital=args.capital)
+    bt = AdaptiveBacktest(args.start, initial_capital=args.capital, config_path=args.config)
     bt.run()
 
 if __name__ == "__main__":

@@ -20,17 +20,25 @@ def compute_metrics(equity_series: pd.Series):
     Returns a dict with total_return, cagr, max_dd, win_rate.
     """
     equity = equity_series.dropna()
+    # Ensure the index is datetime and sorted (important for correct time calculations)
+    equity.index = pd.to_datetime(equity.index)
+    equity = equity.sort_index()
     if equity.empty:
         return {}
     total_return = equity.iloc[-1] / equity.iloc[0] - 1.0
+    # Use precise day count and guard against very small year spans
     days = (equity.index[-1] - equity.index[0]).days
-    years = days / 365.25
-    cagr = (equity.iloc[-1] / equity.iloc[0]) ** (1 / years) - 1 if years > 0 else 0.0
+    years = days / 365.25 if days > 0 else 0.0
+    if years > 0:
+        cagr = (equity.iloc[-1] / equity.iloc[0]) ** (1.0 / years) - 1
+    else:
+        cagr = 0.0
     # Max drawdown
     roll_max = equity.cummax()
     drawdown = (equity - roll_max) / roll_max
     max_dd = drawdown.min()
     # Win rate – count weeks where equity increased compared to previous week
+    # Ensure resampling operates on a DatetimeIndex
     weekly = equity.resample('W').last()
     weekly_returns = weekly.pct_change().fillna(0)
     win_rate = (weekly_returns > 0).mean()

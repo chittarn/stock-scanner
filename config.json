@@ -18,6 +18,13 @@
     "ma_period": 200,
     "atr_period": 14,
     "atr_mult": 2.5,
+    "max_positions_bull": 3,
+    "max_positions_volatile": 2,
+    "momentum_min_return": 0.0,
+    "min_score": 0.0,
+    "regime_confirmation_days": 10,
+    "max_position_pct": 0.33,
+    "risk_per_trade_pct": 0.02,
     "my_holdings": {
         "QQQ": {
             "qty": 0.27570251,

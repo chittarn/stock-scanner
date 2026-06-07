@@ -10,15 +10,29 @@ from rich.table import Table
 from rich.panel import Panel
 from rich import print as rprint
 import pandas as pd
+import argparse
+from datetime import datetime
 
 class CLIScanner:
     def __init__(self):
         self.engine = ScannerEngine()
         self.console = Console()
 
-    def run(self):
+    def run(self, analysis_date=None, force=False):
+        if analysis_date is not None:
+            date_to_use = analysis_date
+        else:
+            date_to_use = datetime.now().date()
+
+        weekday = date_to_use.strftime('%A')
+        if weekday != 'Sunday' and not force:
+            self.console.print(Panel.fit(
+                f"[yellow]Note:[/] This scanner is designed for weekly Sunday review. Running for {weekday} anyway.",
+                border_style="yellow"
+            ))
+
         with self.console.status("[bold green]Fetching & Analyzing data..."):
-            data = self.engine.get_analysis()
+            data = self.engine.get_analysis(end_date=date_to_use)
 
         rprint(Panel.fit(
             f"[bold cyan]ADAPTIVE MOMENTUM SCANNER[/bold cyan]\n[dim]{data['timestamp']}[/dim]",
@@ -43,7 +57,6 @@ class CLIScanner:
         rank_table.add_column("Ticker", style="bold")
         rank_table.add_column("Sector", style="dim")
         rank_table.add_column("Score", justify="right")
-        rank_table.add_column("Conviction", justify="right")
         rank_table.add_column("Trend", justify="center")
         rank_table.add_column("Holdings", justify="center")
 
@@ -63,7 +76,7 @@ class CLIScanner:
                 row_style = "dim"
             
             rank_table.add_row(
-                str(i), t, d['sector'], f"{d['score']:.1f}%", f"{d['conviction']:.1f}", 
+                str(i), t, d['sector'], f"{d['score']:.1f}", 
                 trend_str, hold_icon,
                 style=row_style
             )
@@ -121,28 +134,45 @@ class CLIScanner:
             action_panel.append("[bold red]ACTION: SELL EVERYTHING - MARKET IN BEAR REGIME[/bold red]")
         else:
             if data['to_sell']:
-                action_panel.append("[bold red]SELL ORDERS (Execute Immediately):[/bold red]")
+                action_panel.append("[bold red]ROTATE OUT / SELL ORDERS:[/bold red]")
                 for s in data['to_sell']:
                     action_panel.append(f" - [bold red]SELL ALL[/bold red] {s['ticker']}: {s['qty']:.4f} shares ({s['reason']})")
-                action_panel.append("\n[bold yellow]REPLACEMENT INSTRUCTIONS:[/bold yellow]")
-                action_panel.append("Use the cash from your sells to fund the BUY orders below.")
-            
-            if data['buy_orders'] or data['hold_orders']:
-                action_panel.append(f"\n[bold green]TARGET ALLOCATION (Top {n_target} uptrending assets):[/bold green]")
+                action_panel.append("\n[bold yellow]NOTE:[/bold yellow] Use proceeds to fund the new target positions below.")
+
+            if data['buy_orders']:
+                action_panel.append("\n[bold green]ROTATE INTO / BUY ORDERS:[/bold green]")
                 for b in data['buy_orders']:
                     buy_type = "New Entry" if b['type'] == 'NEW' else "Add"
-                    action_panel.append(f" - [bold green]BUY ({buy_type})[/bold green] {b['ticker']}: ${b['amount']:.2f} (~{b['shares']:.4f} shares)")
+                    action_panel.append(f" - [bold green]{buy_type}[/bold green] {b['ticker']}: ${b['amount']:.2f} (~{b['shares']:.4f} shares at ${b['price']:.2f})")
+
+            if data['hold_orders']:
+                action_panel.append("\n[bold blue]KEEP / HOLD CURRENT POSITIONS:[/bold blue]")
                 for h in data['hold_orders']:
-                    action_panel.append(f" - [bold blue]HOLD[/bold blue] {h['ticker']}: (Current value ${h['value']:.2f})")
-            
+                    action_panel.append(f" - [bold blue]KEEP[/bold blue] {h['ticker']}: Current value ${h['value']:.2f}")
+
+            if not data['to_sell'] and not data['buy_orders'] and data['hold_orders']:
+                action_panel.append("\n[bold green]Recommendation:[/] Keep current positions. No rotation required this week.")
+
             if data['risk_tip']:
                 action_panel.append(f"\n[bold yellow]RISK TIP:[/bold yellow] {data['risk_tip']}")
 
         if not action_panel:
             action_panel.append("OK: Everything looks good. No trades needed this week.")
 
-        self.console.print(Panel("\n".join(action_panel), title="Weekly Action Plan", border_style="green"))
+        self.console.print(Panel("\n".join(action_panel), title=f"Weekly Action Plan ({weekday})", border_style="green"))
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Adaptive Momentum Scanner for weekly review")
+    parser.add_argument("--date", help="Run analysis up to this date (YYYY-MM-DD). Defaults to today.")
+    parser.add_argument("--force", action="store_true", help="Run even if the weekday is not Sunday.")
+    return parser.parse_args()
 
 if __name__ == "__main__":
+    args = parse_args()
+    analysis_date = None
+    if args.date:
+        analysis_date = datetime.strptime(args.date, "%Y-%m-%d").date()
+
     scanner = CLIScanner()
-    scanner.run()
+    scanner.run(analysis_date=analysis_date, force=args.force)

@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 from scanner_engine import ScannerEngine
 import json
+from datetime import datetime
 
 # ==========================================================
 # 🎨 PAGE CONFIG & PREMIUM STYLING
@@ -33,20 +34,29 @@ if 'cache_cleared' not in st.session_state:
 # ==========================================================
 # 🏗️ DATA FETCHING
 # ==========================================================
-def get_analysis_results():
+
+selected_date = st.sidebar.date_input("Analysis Date", datetime.now().date())
+if selected_date.strftime('%A') != 'Sunday':
+    st.sidebar.warning("Best used for Sunday weekly review. Select a Sunday for the intended process.")
+
+if 'selected_date' not in st.session_state or st.session_state.selected_date != selected_date:
+    st.session_state.selected_date = selected_date
+
+
+def get_analysis_results(scan_date):
     # Clear cache each time the app loads to avoid stale data on deployed instances
     st.cache_data.clear()
-    return engine.get_analysis()
+    return engine.get_analysis(end_date=scan_date)
 
 with st.spinner("Analyzing Market Data..."):
-    data = get_analysis_results()
+    data = get_analysis_results(selected_date)
 
 # ==========================================================
 # 🏗️ UI LAYOUT
 # ==========================================================
 
 st.title("⚡ Adaptive Momentum Scanner")
-st.caption(f"Last Scanned: {data['timestamp']}")
+st.caption(f"Last Scanned: {data['timestamp']} — Scan Date: {selected_date}")
 
 tab1, tab2, tab3 = st.tabs(["📊 DASHBOARD", "🏆 RANKINGS", "⚙️ SETTINGS"])
 
@@ -137,7 +147,7 @@ with tab1:
             # Check Buys
             for b in data['buy_orders']:
                 buy_label = "New Entry" if b['type'] == 'NEW' else "Add"
-                st.success(f"🟢 BUY ({buy_label}) **{b['ticker']}**: ${b['amount']:.2f} (~{b['shares']:.4f} shares)")
+                st.success(f"🟢 BUY ({buy_label}) **{b['ticker']}**: ${b['amount']:.2f} (~{b['shares']:.4f} shares at ${b['price']:.2f})")
             
             # Check Holds
             for h in data['hold_orders']:
@@ -154,8 +164,9 @@ with tab2:
             "Ticker": ticker,
             "Sector": d['sector'],
             "Price": f"${d['price']:.2f}",
-            "Score": f"{d['score']:.1f}%",
-            "Conviction": f"{d['conviction']:.1f}",
+            "Score": f"{d['score']:.1f}",
+            "3M Return": f"{d['ret3m']:+.1f}%",
+            "6M Return": f"{d['ret6m']:+.1f}%",
             "Above 200 SMA": "✅ Yes" if d['above_ma200'] else "❌ No"
         })
     rank_df = pd.DataFrame(rank_list).set_index("Ticker")
@@ -188,10 +199,33 @@ with tab3:
     c1, c2 = st.columns(2)
     new_cap = c1.number_input("Initial Capital ($)", value=float(engine.config['initial_capital']))
     new_atr = c2.number_input("ATR Multiplier", value=float(engine.config['atr_mult']))
-    
+
+    c3, c4 = st.columns(2)
+    new_bull = c3.number_input("Max Positions (Bull)", value=int(engine.config.get('max_positions_bull', 3)), min_value=1, max_value=10)
+    new_volatile = c4.number_input("Max Positions (Volatile)", value=int(engine.config.get('max_positions_volatile', 2)), min_value=1, max_value=10)
+
+    c5, c6 = st.columns(2)
+    new_min_return = c5.number_input("Min Momentum Return (%)", value=float(engine.config.get('momentum_min_return', 0.0)))
+    new_min_score = c6.number_input("Min Score", value=float(engine.config.get('min_score', 0.0)))
+
+    c7, c8 = st.columns(2)
+    new_confirm = c7.number_input("Regime Confirmation Days", value=int(engine.config.get('regime_confirmation_days', 10)), min_value=1, max_value=30)
+    new_max_pct = c8.number_input("Max Position % of Portfolio", value=float(engine.config.get('max_position_pct', 0.33)), min_value=0.05, max_value=1.0, step=0.01)
+
+    c9, c10 = st.columns(2)
+    new_risk_pct = c9.number_input("Risk Per Trade %", value=float(engine.config.get('risk_per_trade_pct', 0.02)), min_value=0.005, max_value=0.10, step=0.005)
+
     if st.button("💾 SAVE CONSTANTS"):
         engine.config['initial_capital'] = new_cap
         engine.config['atr_mult'] = new_atr
+        engine.config['max_positions_bull'] = new_bull
+        engine.config['max_positions_volatile'] = new_volatile
+        engine.config['momentum_min_return'] = new_min_return
+        engine.config['min_score'] = new_min_score
+        engine.config['regime_confirmation_days'] = new_confirm
+        engine.config['max_position_pct'] = new_max_pct
+        engine.config['risk_per_trade_pct'] = new_risk_pct
         engine.save_config()
         st.success("Constants updated!")
+        st.cache_data.clear()
         st.rerun()

@@ -28,9 +28,10 @@ class ScannerEngine:
             "atr_mult": 2.5,
             "max_positions_bull": 3,
             "max_positions_volatile": 2,
-            "momentum_min_return": 0.0,
+            "momentum_min_return": 5.0,
             "min_score": 0.0,
             "regime_confirmation_days": 10,
+            "max_sector_positions": 1,
             "max_position_pct": 0.33,
             "risk_per_trade_pct": 0.02,
             "my_holdings": {}
@@ -99,6 +100,26 @@ class ScannerEngine:
         atr = tr.rolling(window=period).mean().ffill().bfill()
         return atr
 
+    def get_target_allocation(self, ticker, price, atr_value, target_total, regime="BULL"):
+        if price <= 0 or atr_value <= 0 or target_total <= 0:
+            return 0.0
+
+        risk_pct = float(self.config.get('risk_per_trade_pct', 0.02))
+        if regime == "VOLATILE":
+            risk_pct *= 0.75
+        elif regime == "BEAR":
+            risk_pct *= 0.50
+
+        risk_amount = risk_pct * target_total
+        stop_distance = float(self.config.get('atr_mult', 2.5)) * atr_value
+        if stop_distance <= 0:
+            return 0.0
+
+        max_shares_by_risk = risk_amount / stop_distance
+        max_amount_by_risk = max_shares_by_risk * price
+        max_amount_by_pct = float(self.config.get('max_position_pct', 0.33)) * target_total
+        return min(max_amount_by_risk, max_amount_by_pct)
+
     def get_market_regime(self, prices, atr=None):
         if 'SPY' not in prices.columns:
             return "BULL", 0.0, 0.0, 0.0
@@ -119,16 +140,18 @@ class ScannerEngine:
         dist_pct = (spy_price / spy_ma - 1) * 100
         regime = "BULL"
 
+        ma_series = valid_spy.rolling(window=ma_period).mean()
+        confirm_days = min(self.config['regime_confirmation_days'], len(valid_spy))
         if spy_price < spy_ma:
-            regime = "BEAR"
+            if confirm_days > 1:
+                recent_below_ma = valid_spy.tail(confirm_days) < ma_series.tail(confirm_days)
+                regime = "BEAR" if recent_below_ma.all() else "VOLATILE"
+            else:
+                regime = "VOLATILE"
         else:
-            ma_series = valid_spy.rolling(window=ma_period).mean()
-            confirm_days = min(self.config['regime_confirmation_days'], len(valid_spy))
             if confirm_days > 1:
                 recent_above_ma = valid_spy.tail(confirm_days) > ma_series.tail(confirm_days)
-                if not recent_above_ma.all():
-                    regime = "VOLATILE"
-                elif spy_price < spy_ma50:
+                if not recent_above_ma.all() or spy_price < spy_ma50:
                     regime = "VOLATILE"
             elif spy_price < spy_ma50:
                 regime = "VOLATILE"
@@ -199,6 +222,7 @@ class ScannerEngine:
         atr = self.calculate_atr(prices, high, low, self.config['atr_period'])
         regime, spy_price, spy_ma, dist = self.get_market_regime(prices, atr)
         scores = self.get_momentum_scores(prices)
+        timestamp = datetime.now(self.ist).strftime('%Y-%m-%d %I:%M %p IST')
         
         # Sort tickers by score (descending)
         sorted_ranks = sorted(scores.items(), key=lambda x: x[1]['score'], reverse=True)
@@ -213,7 +237,20 @@ class ScannerEngine:
             t for t, d in sorted_ranks
             if d['above_ma200'] and d['momentum_ok'] and d['score'] >= self.config['min_score']
         ]
-        top_targets = eligible_candidates[:n_target]
+        top_targets = []
+        used_sectors = set()
+        max_sector_positions = max(1, int(self.config.get('max_sector_positions', 1)))
+        sector_counts = {}
+        for t in eligible_candidates:
+            sector = scores[t]['sector']
+            sector_counts[sector] = sector_counts.get(sector, 0)
+            if sector_counts[sector] >= max_sector_positions:
+                continue
+            top_targets.append(t)
+            sector_counts[sector] += 1
+            used_sectors.add(sector)
+            if len(top_targets) >= n_target:
+                break
 
         returns = prices.pct_change().dropna()
         corr_matrix = returns.tail(60).corr()
@@ -327,25 +364,36 @@ class ScannerEngine:
 
         if regime != "BEAR" and n_target > 0:
             target_total = max(total_value, self.config['initial_capital'])
-            target_per_stock = target_total / n_target
-            keepable_tickers = {h['ticker'] for h in keepable_holdings}
-            keepable_value = sum(h['value'] for h in keepable_holdings)
+            active_candidates = [t for t in top_targets if t not in stopped_tickers]
 
-            slots_available = max(0, n_target - len(keepable_holdings))
-            filtered_targets = [t for t in top_targets if t not in stopped_tickers and t not in keepable_tickers]
-
-            remaining_capital = max(0.0, target_total - keepable_value)
-            amount_per_new = remaining_capital / slots_available if slots_available > 0 else 0.0
-
-            for ticker in filtered_targets[:slots_available]:
-                is_held = self.config['my_holdings'].get(ticker, {}).get('qty', 0) > 0
+            target_amounts = {}
+            for ticker in active_candidates:
                 curr_price = scores.get(ticker, {}).get('price', 0.0)
-                if curr_price == 0.0:
-                    curr_price = prices[ticker].dropna().iloc[-1] if (ticker in prices.columns and len(prices[ticker].dropna()) > 0) else 0.0
+                if curr_price == 0.0 and ticker in prices.columns and len(prices[ticker].dropna()) > 0:
+                    curr_price = prices[ticker].dropna().iloc[-1]
 
+                curr_atr = atr[ticker].iloc[-1] if ticker in atr.columns else 0.0
+                target_amounts[ticker] = self.get_target_allocation(ticker, curr_price, curr_atr, target_total, regime)
+
+            total_target_amount = sum(target_amounts.values())
+            if total_target_amount > 0 and total_target_amount > target_total:
+                scale = target_total / total_target_amount
+                for ticker in target_amounts:
+                    target_amounts[ticker] *= scale
+
+            for ticker in active_candidates:
+                desired_amount = target_amounts.get(ticker, 0.0)
+                if desired_amount <= 0:
+                    continue
+
+                curr_price = scores.get(ticker, {}).get('price', 0.0)
+                if curr_price == 0.0 and ticker in prices.columns and len(prices[ticker].dropna()) > 0:
+                    curr_price = prices[ticker].dropna().iloc[-1]
+
+                is_held = self.config['my_holdings'].get(ticker, {}).get('qty', 0) > 0
                 curr_val = self.config['my_holdings'].get(ticker, {}).get('qty', 0) * curr_price if is_held else 0.0
-                desired_amount = amount_per_new
                 diff = desired_amount - curr_val
+
                 if not is_held and desired_amount > 0:
                     buy_orders.append({
                         'ticker': ticker,
@@ -354,7 +402,7 @@ class ScannerEngine:
                         'shares': desired_amount / curr_price if curr_price > 0 else 0.0,
                         'price': curr_price
                     })
-                elif is_held and diff > max(5.0, target_per_stock * 0.10):
+                elif is_held and diff > max(5.0, desired_amount * 0.10):
                     buy_orders.append({
                         'ticker': ticker,
                         'type': 'ADD',
@@ -362,16 +410,12 @@ class ScannerEngine:
                         'shares': diff / curr_price if curr_price > 0 else 0.0,
                         'price': curr_price
                     })
-
-            for ticker in keepable_tickers:
-                if ticker not in stopped_tickers and ticker not in [order['ticker'] for order in buy_orders]:
-                    curr_price = scores.get(ticker, {}).get('price', 0.0)
-                    curr_price = curr_price if curr_price > 0 else prices[ticker].dropna().iloc[-1] if (ticker in prices.columns and len(prices[ticker].dropna()) > 0) else 0.0
+                elif is_held and ticker not in stopped_tickers:
                     hold_orders.append({
                         'ticker': ticker,
-                        'value': self.config['my_holdings'].get(ticker, {}).get('qty', 0) * curr_price
+                        'value': curr_val
                     })
-                    
+
         return {
             "prices": prices,
             "atr": atr,
@@ -395,5 +439,5 @@ class ScannerEngine:
             "to_sell": to_sell,
             "buy_orders": buy_orders,
             "hold_orders": hold_orders,
-            "timestamp": self.now.strftime('%Y-%m-%d %I:%M %p IST')
+            "timestamp": timestamp
         }

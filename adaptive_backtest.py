@@ -31,6 +31,20 @@ FX_FEE = 0.003
 MIN_TRADE = 5.0
 W6 = 0.6
 W3 = 0.4
+MOMENTUM_MIN_RETURN = 5.0
+MAX_SECTOR_POSITIONS = 1
+
+SECTORS = {
+    "NVDA": "Semiconductors",
+    "MSFT": "Software",
+    "QQQ": "Index",
+    "AMZN": "Consumer Discretionary",
+    "SMH": "Semiconductors",
+    "CAT": "Industrials",
+    "XLE": "Energy",
+    "WMT": "Consumer Staples",
+    "GLD": "Gold",
+}
 
 class AdaptiveBacktest:
     def __init__(self, start_date, end_date=None, initial_capital=300.0, config_path="config.json"):
@@ -97,14 +111,20 @@ class AdaptiveBacktest:
         ma200 = self.spy_ma.loc[date]
         ma50 = self.spy_ma50.loc[date]
         if pd.isna(ma200): return 'BULL'
-        
-        # Match live scanner: price vs MA comparison (not distance-based)
+
+        regime = 'BULL'
+        idx = self.prices.index.get_loc(date)
+        confirm_days = min(10, idx + 1)
+        ma_window = self.spy_ma.iloc[:idx + 1]
+        recent_prices = self.prices['SPY'].iloc[max(0, idx - confirm_days + 1):idx + 1]
+        recent_ma = ma_window.iloc[max(0, len(ma_window) - confirm_days):]
+
         if spy_price < ma200:
-            regime = 'BEAR'
+            regime = 'BEAR' if (recent_prices < recent_ma).all() else 'VOLATILE'
         elif not pd.isna(ma50) and spy_price < ma50:
             regime = 'VOLATILE'
-        else:
-            regime = 'BULL'
+        elif (recent_prices < recent_ma).all():
+            regime = 'VOLATILE'
         
         # ATR volatility check (matches live scanner)
         if hasattr(self, 'spy_atr'):
@@ -144,10 +164,11 @@ class AdaptiveBacktest:
                 
                 ma = self.mas[t].loc[date]
                 above_ma = curr > ma if not pd.isna(ma) else True
+                momentum_ok = ret3m >= MOMENTUM_MIN_RETURN and ret6m >= MOMENTUM_MIN_RETURN
                 
                 # Conviction equals score (matches live scanner)
                 conviction = score
-                scores[t] = {'score': score, 'above_ma': above_ma, 'conviction': conviction}
+                scores[t] = {'score': score, 'above_ma': above_ma, 'conviction': conviction, 'momentum_ok': momentum_ok}
         
         sorted_ranks = sorted(scores.items(), key=lambda x: x[1]['conviction'], reverse=True)
         return sorted_ranks # List of (ticker, data)
@@ -206,8 +227,21 @@ class AdaptiveBacktest:
 
         n_target = 2 if regime == 'BULL' else 1
         rankings = self.get_rankings(date)
-        top_2 = [r[0] for r in rankings[:2]]
         top_4 = [r[0] for r in rankings[:4]]
+
+        targets = []
+        sector_counts = {}
+        for ticker, data in rankings:
+            if not data['above_ma'] or not data['momentum_ok']:
+                continue
+            sector_key = SECTORS.get(ticker, "Other")
+            sector_counts[sector_key] = sector_counts.get(sector_key, 0)
+            if sector_counts[sector_key] >= MAX_SECTOR_POSITIONS:
+                continue
+            targets.append((ticker, data))
+            sector_counts[sector_key] += 1
+            if len(targets) >= n_target:
+                break
         
         # 1. Stop Loss Check (ATR-based approx or fixed)
         for t in list(self.holdings.keys()):
@@ -230,13 +264,12 @@ class AdaptiveBacktest:
         total_val = self.portfolio_value(date)
         target_per_stock = total_val / n_target
         
-        for i, (t, d) in enumerate(rankings[:n_target]):
-            if d['above_ma']:
-                curr_shares = self.holdings.get(t, {}).get('shares', 0)
-                curr_val = curr_shares * self.prices[t].loc[date]
-                diff = target_per_stock - curr_val
-                if diff > MIN_TRADE:
-                    self.buy(date, t, diff)
+        for t, d in targets:
+            curr_shares = self.holdings.get(t, {}).get('shares', 0)
+            curr_val = curr_shares * self.prices[t].loc[date]
+            diff = target_per_stock - curr_val
+            if diff > MIN_TRADE:
+                self.buy(date, t, diff)
 
     def run(self):
         self.fetch_data()

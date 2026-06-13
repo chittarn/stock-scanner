@@ -147,7 +147,9 @@ with tab1:
         else:
             if data['to_sell']:
                 for item in data['to_sell']:
-                    st.error(f'🔴 SELL ALL **{item["ticker"]}** ({item["reason"]})')
+                    qty = item.get('qty')
+                    sell_label = f'SELL {qty:.4f} shares' if qty is not None else 'SELL'
+                    st.error(f'🔴 {sell_label} **{item["ticker"]}** ({item["reason"]})')
                 st.caption('Use the cash from your sells to fund the BUY orders below.')
 
             for item in data['buy_orders']:

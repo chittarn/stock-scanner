@@ -106,7 +106,7 @@ class CLIScanner:
             if data['to_sell']:
                 action_panel.append("[bold red]ROTATE OUT / SELL ORDERS:[/bold red]")
                 for s in data['to_sell']:
-                    action_panel.append(f" - [bold red]SELL ALL[/bold red] {s['ticker']}: {s['qty']:.4f} shares ({s['reason']})")
+                    action_panel.append(f" - [bold red]SELL[/bold red] {s['ticker']}: {s['qty']:.4f} shares ({s['reason']})")
                 action_panel.append("\n[bold yellow]NOTE:[/] Use proceeds to fund the new target positions below.")
 
             if data['buy_orders']:

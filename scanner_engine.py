@@ -381,6 +381,19 @@ class ScannerEngine:
                 for ticker in target_amounts:
                     target_amounts[ticker] *= scale
 
+            # If current holdings are not among the active targets, sell them to fund new allocations
+            for ticker, h in self.config['my_holdings'].items():
+                if ticker not in active_candidates and ticker not in stopped_tickers:
+                    curr_price = scores.get(ticker, {}).get('price', 0.0)
+                    if curr_price == 0.0 and ticker in prices.columns and len(prices[ticker].dropna()) > 0:
+                        curr_price = prices[ticker].dropna().iloc[-1]
+                    if h['qty'] > 0:
+                        to_sell.append({
+                            'ticker': ticker,
+                            'qty': h['qty'],
+                            'reason': 'Rebalance: not a top target'
+                        })
+
             for ticker in active_candidates:
                 desired_amount = target_amounts.get(ticker, 0.0)
                 if desired_amount <= 0:
@@ -409,6 +422,13 @@ class ScannerEngine:
                         'amount': diff,
                         'shares': diff / curr_price if curr_price > 0 else 0.0,
                         'price': curr_price
+                    })
+                elif is_held and diff < -max(5.0, curr_val * 0.10):
+                    sell_qty = -diff / curr_price if curr_price > 0 else 0.0
+                    to_sell.append({
+                        'ticker': ticker,
+                        'qty': sell_qty,
+                        'reason': 'Rebalance: reduce position to fund new target'
                     })
                 elif is_held and ticker not in stopped_tickers:
                     hold_orders.append({

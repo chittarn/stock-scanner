@@ -14,7 +14,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
-from scanner_engine import ScannerEngine
+from scanner_engine import ScannerEngine, VERSION
 
 
 class CLIScanner:
@@ -24,7 +24,7 @@ class CLIScanner:
 
     def print_scan(self, data, weekday):
         self.console.print(Panel.fit(
-            f"[bold cyan]ADAPTIVE MOMENTUM SCANNER[/bold cyan]\n[dim]{data['timestamp']}[/dim]",
+            f"[bold cyan]ADAPTIVE MOMENTUM SCANNER[/bold cyan]  [dim]v{VERSION}[/dim]\n[dim]{data['timestamp']}[/dim]",
             border_style="blue"
         ))
 
@@ -169,7 +169,7 @@ class CLIScanner:
         self.console.print(f'[green]Removed holding:[/] {ticker}')
 
     def run(self, args=None):
-        parser = argparse.ArgumentParser(description='Adaptive Momentum Scanner for weekly review')
+        parser = argparse.ArgumentParser(description=f'Adaptive Momentum Scanner v{VERSION} — Weekly review tool')
         subparsers = parser.add_subparsers(dest='command')
 
         scan_parser = subparsers.add_parser('scan', help='Run the scanner and display the weekly action plan.')
@@ -192,10 +192,12 @@ class CLIScanner:
         subparsers.add_parser('config', help='Show current scanner configuration from config.json.')
         subparsers.add_parser('web', help='Show web app launch instructions.')
 
+        import sys
+        if args is None:
+            args = sys.argv[1:]
+        if not args:
+            args = ['scan']
         parsed = parser.parse_args(args)
-        if parsed.command is None:
-            parsed.command = 'scan'
-
         if parsed.command == 'scan':
             analysis_date = None
             if parsed.date:

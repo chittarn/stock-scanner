@@ -4,13 +4,13 @@ from datetime import datetime
 import pandas as pd
 import streamlit as st
 
-from scanner_engine import ScannerEngine
+from scanner_engine import ScannerEngine, VERSION
 
 
 # ==========================================================
 # 🎨 PAGE CONFIG & PREMIUM STYLING
 # ==========================================================
-st.set_page_config(page_title='Adaptive Momentum Dashboard', layout='wide', page_icon='⚡')
+st.set_page_config(page_title=f'Adaptive Momentum Dashboard v{VERSION}', layout='wide', page_icon='⚡')
 
 st.markdown(
     """
@@ -68,7 +68,7 @@ with st.spinner('Analyzing Market Data...'):
         st.stop()
 
 st.title('⚡ Adaptive Momentum Scanner')
-st.caption(f'Last Scanned: {data["timestamp"]} — Scan Date: {selected_date}')
+st.caption(f'v{VERSION} — Last Scanned: {data["timestamp"]} — Scan Date: {selected_date}')
 
 
 tab1, tab2, tab3 = st.tabs(['📊 DASHBOARD', '🏆 RANKINGS', '⚙️ SETTINGS'])
@@ -109,13 +109,22 @@ with tab1:
         st.subheader('💼 Your Portfolio')
         portfolio_items = []
         for item in data['portfolio_items']:
+            # Build protection status badge
+            protection = ''
+            if item.get('in_grace_period'):
+                protection = '🛡️ Grace'
+            elif item.get('holding_age_days', 999) < engine.config.get('min_holding_days', 10):
+                protection = '🔒 Min Hold'
+
             portfolio_items.append(
                 {
                     'Ticker': item['ticker'],
                     'Value': f'${item["value"]:.2f}',
                     'P&L %': f'{item["pnl_pct"]:+.1f}%',
                     'Stop Loss (ATR)': f'-{item["atr_stop_dist"]:.1f}%',
+                    'Age': f'{item.get("holding_age_days", "?")}d',
                     'Status': item['status'],
+                    'Protection': protection,
                 }
             )
 
@@ -189,17 +198,18 @@ with tab3:
     if st.button('💾 SAVE HOLDINGS'):
         new_holdings = {}
         for _, row in edited_holdings.iterrows():
-            if row.get('Ticker'):
-                new_holdings[row['Ticker'].upper()] = {
-                    'qty': float(row.get('Qty', 0.0)),
-                    'avg_cost': float(row.get('Avg Cost', 0.0)),
-                    'entry_date': row.get('Entry Date') or datetime.now().strftime('%Y-%m-%d'),
+            ticker = row.get('Ticker')
+            if pd.notna(ticker) and str(ticker).strip():
+                new_holdings[str(ticker).strip().upper()] = {
+                    'qty': float(row.get('Qty', 0.0) if pd.notna(row.get('Qty')) else 0.0),
+                    'avg_cost': float(row.get('Avg Cost', 0.0) if pd.notna(row.get('Avg Cost')) else 0.0),
+                    'entry_date': row.get('Entry Date') if pd.notna(row.get('Entry Date')) and str(row.get('Entry Date')).strip() else datetime.now().strftime('%Y-%m-%d'),
                 }
         engine.config['my_holdings'] = new_holdings
         engine.save_config()
         st.success('Holdings updated successfully!')
         st.cache_data.clear()
-        st.experimental_rerun()
+        st.rerun()
 
     st.markdown('---')
     st.write('Strategy Constants')
@@ -212,7 +222,7 @@ with tab3:
     new_volatile = c4.number_input('Max Positions (Volatile)', value=int(engine.config.get('max_positions_volatile', 2)), min_value=1, max_value=10)
 
     c5, c6 = st.columns(2)
-    new_min_return = c5.number_input('Min Momentum Return (%)', value=float(engine.config.get('momentum_min_return', 5.0)))
+    new_min_return = c5.number_input('Min Momentum Return — Entry (%)', value=float(engine.config.get('momentum_min_return', 5.0)), help='Strict threshold for new buys')
     new_min_score = c6.number_input('Min Score', value=float(engine.config.get('min_score', 0.0)))
 
     c7, c8 = st.columns(2)
@@ -221,6 +231,14 @@ with tab3:
 
     c9, c10 = st.columns(2)
     new_risk_pct = c9.number_input('Risk Per Trade %', value=float(engine.config.get('risk_per_trade_pct', 0.02)), min_value=0.005, max_value=0.10, step=0.005)
+    new_exit_return = c10.number_input('Min Momentum Return — Exit (%)', value=float(engine.config.get('momentum_exit_min_return', 0.0)), help='Relaxed threshold for selling existing holdings')
+
+    st.markdown('---')
+    st.write('🛡️ Stability & Anti-Churn Settings')
+    s1, s2, s3 = st.columns(3)
+    new_grace = s1.number_input('Grace Period (days)', value=int(engine.config.get('grace_period_days', 5)), min_value=0, max_value=30, help='New entries are protected from trailing stop for this many days')
+    new_min_hold = s2.number_input('Min Holding Period (days)', value=int(engine.config.get('min_holding_days', 10)), min_value=0, max_value=60, help='Positions cannot be sold for trend weakness within this period')
+    new_rank_buf = s3.number_input('Rank Buffer', value=int(engine.config.get('rebalance_rank_buffer', 2)), min_value=0, max_value=5, help='Holdings within top (N + buffer) ranks are not rebalance-sold')
 
     if st.button('💾 SAVE CONSTANTS'):
         engine.config['initial_capital'] = new_cap
@@ -228,11 +246,15 @@ with tab3:
         engine.config['max_positions_bull'] = new_bull
         engine.config['max_positions_volatile'] = new_volatile
         engine.config['momentum_min_return'] = new_min_return
+        engine.config['momentum_exit_min_return'] = new_exit_return
         engine.config['min_score'] = new_min_score
         engine.config['regime_confirmation_days'] = new_confirm
         engine.config['max_position_pct'] = new_max_pct
         engine.config['risk_per_trade_pct'] = new_risk_pct
+        engine.config['grace_period_days'] = new_grace
+        engine.config['min_holding_days'] = new_min_hold
+        engine.config['rebalance_rank_buffer'] = new_rank_buf
         engine.save_config()
         st.success('Constants updated successfully!')
         st.cache_data.clear()
-        st.experimental_rerun()
+        st.rerun()

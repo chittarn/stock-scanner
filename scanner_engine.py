@@ -12,6 +12,8 @@ import pytz
 import json
 import os
 
+VERSION = "2.0.0"
+
 class ScannerEngine:
     def __init__(self, config_path="config.json"):
         self.config_path = config_path
@@ -29,11 +31,15 @@ class ScannerEngine:
             "max_positions_bull": 3,
             "max_positions_volatile": 2,
             "momentum_min_return": 5.0,
+            "momentum_exit_min_return": 0.0,
             "min_score": 0.0,
             "regime_confirmation_days": 10,
             "max_sector_positions": 1,
             "max_position_pct": 0.33,
             "risk_per_trade_pct": 0.02,
+            "grace_period_days": 5,
+            "min_holding_days": 10,
+            "rebalance_rank_buffer": 2,
             "my_holdings": {}
         }
 
@@ -52,7 +58,7 @@ class ScannerEngine:
     def update_holding(self, ticker, qty, avg_cost, entry_date=None):
         existing = self.config['my_holdings'].get(ticker, {})
         holding = {"qty": float(qty), "avg_cost": float(avg_cost)}
-        # Preserve or set entry_date for trailing stop calculation
+        # Always preserve or set entry_date for trailing stop and grace period calculation
         if entry_date:
             holding["entry_date"] = entry_date
         elif 'entry_date' in existing:
@@ -61,6 +67,18 @@ class ScannerEngine:
             holding["entry_date"] = datetime.now().strftime('%Y-%m-%d')
         self.config['my_holdings'][ticker] = holding
         self.save_config()
+
+    def _get_holding_age_days(self, holding, end_date=None):
+        """Calculate how many calendar days a holding has been held."""
+        entry_date_str = holding.get('entry_date')
+        if not entry_date_str:
+            return 999  # No entry date = assume old holding, no special treatment
+        try:
+            entry_dt = pd.to_datetime(entry_date_str).date()
+            ref_date = end_date if end_date else datetime.now().date()
+            return (ref_date - entry_dt).days
+        except (ValueError, TypeError):
+            return 999
 
     def delete_holding(self, ticker):
         if ticker in self.config['my_holdings']:
@@ -72,11 +90,11 @@ class ScannerEngine:
         symbols = list(set(self.config['universe'] + holdings_symbols + ['SPY']))
         # Determine download range
         if end_date is None:
-            # Default: use max available data up to now
-            data = yf.download(symbols, period="max", auto_adjust=True, progress=False, threads=False)
+            # Default: use 5y available data up to now to avoid yfinance 'max' bugs
+            data = yf.download(symbols, period="5y", auto_adjust=True, progress=False, threads=False)
         else:
-            # Fetch one year of history ending at the specified date
-            start_dt = end_date - timedelta(days=365)
+            # Fetch two years of history ending at the specified date
+            start_dt = end_date - timedelta(days=730)
             # yfinance expects strings in YYYY-MM-DD format
             start_str = start_dt.strftime('%Y-%m-%d')
             end_str = (end_date + timedelta(days=1)).strftime('%Y-%m-%d')
@@ -200,7 +218,14 @@ class ScannerEngine:
                 ma_len = min(200, len(valid_prices))
                 ma200 = valid_prices.rolling(window=ma_len).mean().iloc[-1]
                 above_ma200 = curr > ma200
-                momentum_ok = ret3m >= self.config['momentum_min_return'] and ret6m >= self.config['momentum_min_return']
+
+                # Entry criteria: strict threshold (for new buys)
+                entry_min = self.config['momentum_min_return']
+                momentum_ok = ret3m >= entry_min and ret6m >= entry_min
+
+                # Exit criteria: relaxed threshold (for existing holdings)
+                exit_min = self.config.get('momentum_exit_min_return', 0.0)
+                exit_momentum_ok = ret3m >= exit_min and ret6m >= exit_min
 
                 scores[t] = {
                     'score': score,
@@ -208,6 +233,7 @@ class ScannerEngine:
                     'ret3m': ret3m,
                     'ret6m': ret6m,
                     'momentum_ok': momentum_ok,
+                    'exit_momentum_ok': exit_momentum_ok,
                     'above_ma200': above_ma200,
                     'ma200': ma200,
                     'sector': sectors.get(t, "Other")
@@ -284,6 +310,10 @@ class ScannerEngine:
         to_sell = []
         keepable_holdings = []
 
+        grace_period = int(self.config.get('grace_period_days', 5))
+        min_hold = int(self.config.get('min_holding_days', 10))
+        analysis_date = end_date  # may be None for live runs
+
         for t, h in self.config['my_holdings'].items():
             if h['qty'] <= 0:
                 continue
@@ -297,6 +327,10 @@ class ScannerEngine:
             total_value += val
             total_cost += cost
             pnl_pct = (curr_price / h['avg_cost'] - 1) * 100
+
+            holding_age = self._get_holding_age_days(h, analysis_date)
+            in_grace_period = holding_age < grace_period
+            within_min_hold = holding_age < min_hold
 
             curr_atr = atr[t].iloc[-1] if t in atr.columns else 0.0
             current_atr_mult = self.config['atr_mult']
@@ -323,19 +357,23 @@ class ScannerEngine:
             status = "KEEP"
             reason = ""
 
+            # Use RELAXED exit criteria for existing holdings (not the strict entry criteria)
             below_200 = False
-            weak_momentum = False
+            weak_exit_momentum = False
             if t in scores:
                 below_200 = not scores[t]['above_ma200']
-                weak_momentum = not scores[t]['momentum_ok']
+                weak_exit_momentum = not scores[t]['exit_momentum_ok']  # relaxed threshold
 
             if regime == "BEAR":
+                # Bear regime: always sell regardless of holding age
                 status = "SELL"
                 reason = "Bear Market"
-            elif curr_price < stop_price:
+            elif curr_price < stop_price and not in_grace_period:
+                # ATR trailing stop — but skip during grace period for new entries
                 status = "STOP"
                 reason = f"{'Profit Protection' if is_profit_protected else 'Stop Loss'} (ATR Break)"
-            elif below_200 or weak_momentum:
+            elif (below_200 or weak_exit_momentum) and not within_min_hold:
+                # Trend weakness exit — but only after minimum holding period
                 status = "EXIT"
                 reason = "Trend Weakness"
             else:
@@ -355,12 +393,30 @@ class ScannerEngine:
                 'pnl_pct': pnl_pct,
                 'atr_stop_dist': atr_stop_dist,
                 'status': status,
-                'reason': reason
+                'reason': reason,
+                'holding_age_days': holding_age,
+                'in_grace_period': in_grace_period
             })
 
         stopped_tickers = {item['ticker'] for item in portfolio_items if item['status'] in ["SELL", "STOP", "EXIT"]}
         buy_orders = []
         hold_orders = []
+
+        # Build an extended target list that includes a rank buffer for existing holdings
+        rank_buffer = int(self.config.get('rebalance_rank_buffer', 2))
+        extended_n = n_target + rank_buffer  # Holdings are safe if within this expanded rank
+        extended_eligible = []
+        ext_sector_counts = {}
+        for t in eligible_candidates:
+            sector = scores[t]['sector']
+            ext_sector_counts[sector] = ext_sector_counts.get(sector, 0)
+            # Allow more sector slots for the buffer zone
+            if ext_sector_counts[sector] >= max_sector_positions + 1:
+                continue
+            extended_eligible.append(t)
+            ext_sector_counts[sector] += 1
+            if len(extended_eligible) >= extended_n:
+                break
 
         if regime != "BEAR" and n_target > 0:
             target_total = max(total_value, self.config['initial_capital'])
@@ -381,18 +437,31 @@ class ScannerEngine:
                 for ticker in target_amounts:
                     target_amounts[ticker] *= scale
 
-            # If current holdings are not among the active targets, sell them to fund new allocations
+            # Only sell holdings that are outside the extended rank buffer AND past min holding period
             for ticker, h in self.config['my_holdings'].items():
                 if ticker not in active_candidates and ticker not in stopped_tickers:
+                    holding_age = self._get_holding_age_days(h, analysis_date)
+                    in_extended_targets = ticker in extended_eligible
+                    within_min_hold = holding_age < min_hold
+
                     curr_price = scores.get(ticker, {}).get('price', 0.0)
                     if curr_price == 0.0 and ticker in prices.columns and len(prices[ticker].dropna()) > 0:
                         curr_price = prices[ticker].dropna().iloc[-1]
+
                     if h['qty'] > 0:
-                        to_sell.append({
-                            'ticker': ticker,
-                            'qty': h['qty'],
-                            'reason': 'Rebalance: not a top target'
-                        })
+                        if within_min_hold:
+                            # Within minimum holding period — hold, don't rebalance-sell
+                            hold_orders.append({'ticker': ticker, 'value': h['qty'] * curr_price})
+                        elif in_extended_targets:
+                            # Within rank buffer — hold, not urgent to sell
+                            hold_orders.append({'ticker': ticker, 'value': h['qty'] * curr_price})
+                        else:
+                            # Outside buffer AND past min hold → sell for rebalance
+                            to_sell.append({
+                                'ticker': ticker,
+                                'qty': h['qty'],
+                                'reason': 'Rebalance: not a top target'
+                            })
 
             for ticker in active_candidates:
                 desired_amount = target_amounts.get(ticker, 0.0)

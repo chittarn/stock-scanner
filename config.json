@@ -21,19 +21,30 @@
     "max_positions_bull": 3,
     "max_positions_volatile": 2,
     "momentum_min_return": 5.0,
+    "momentum_exit_min_return": 0.0,
     "min_score": 0.0,
     "regime_confirmation_days": 10,
     "max_sector_positions": 1,
     "max_position_pct": 0.33,
     "risk_per_trade_pct": 0.02,
+    "grace_period_days": 5,
+    "min_holding_days": 10,
+    "rebalance_rank_buffer": 2,
     "my_holdings": {
         "QQQ": {
             "qty": 0.27570251,
-            "avg_cost": 739.24
+            "avg_cost": 741.42,
+            "entry_date": "2026-06-15"
         },
         "CAT": {
-            "qty": 0.23447121,
-            "avg_cost": 871.75
+            "qty": 0.09277121,
+            "avg_cost": 874.31,
+            "entry_date": "2026-06-15"
+        },
+        "LLY": {
+            "qty": 0.11882013,
+            "avg_cost": 1120.35,
+            "entry_date": "2026-06-15"
         }
     }
 }

@@ -159,7 +159,8 @@ with tab1:
                     qty = item.get('qty')
                     sell_label = f'SELL {qty:.4f} shares' if qty is not None else 'SELL'
                     st.error(f'🔴 {sell_label} **{item["ticker"]}** ({item["reason"]})')
-                st.caption('Use the cash from your sells to fund the BUY orders below.')
+                if data['buy_orders']:
+                    st.caption('Use the cash from your sells to fund the BUY orders below.')
 
             for item in data['buy_orders']:
                 label = 'New Entry' if item['type'] == 'NEW' else 'Add'

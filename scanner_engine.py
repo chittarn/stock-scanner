@@ -432,7 +432,8 @@ class ScannerEngine:
                 target_amounts[ticker] = self.get_target_allocation(ticker, curr_price, curr_atr, target_total, regime)
 
             total_target_amount = sum(target_amounts.values())
-            if total_target_amount > 0 and total_target_amount > target_total:
+            # Force full investment: scale target amounts to match 100% of the portfolio value
+            if total_target_amount > 0:
                 scale = target_total / total_target_amount
                 for ticker in target_amounts:
                     target_amounts[ticker] *= scale
@@ -497,7 +498,7 @@ class ScannerEngine:
                     to_sell.append({
                         'ticker': ticker,
                         'qty': sell_qty,
-                        'reason': 'Rebalance: reduce position to fund new target'
+                        'reason': 'Rebalance: trim overweight position'
                     })
                 elif is_held and ticker not in stopped_tickers:
                     hold_orders.append({

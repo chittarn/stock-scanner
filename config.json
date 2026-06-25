@@ -12,7 +12,9 @@
         "XLE",
         "WMT",
         "LMT",
-        "GLD"
+        "GLD",
+        "SPY",
+        "TLT"
     ],
     "initial_capital": 300.0,
     "ma_period": 200,

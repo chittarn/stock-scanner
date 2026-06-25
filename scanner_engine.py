@@ -191,7 +191,8 @@ class ScannerEngine:
             "CAT": "Industrials", "BRK-B": "Financials", "XLF": "Financials",
             "JPM": "Financials", "XLV": "Healthcare", "LLY": "Healthcare",
             "XLE": "Energy", "WMT": "Consumer Staples", "LMT": "Defense", 
-            "GLD": "Gold", "MSFT": "Software", "GOOGL": "Communication", "AMD": "Semiconductors"
+            "GLD": "Gold", "MSFT": "Software", "GOOGL": "Communication", "AMD": "Semiconductors",
+            "SPY": "Index (Broad)", "TLT": "Bonds (Long-Term)"
         }
 
         scores = {}

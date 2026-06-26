@@ -141,6 +141,13 @@ with tab1:
 
         if portfolio_items:
             st.table(pd.DataFrame(portfolio_items))
+            with st.expander('📖 Status Legend'):
+                st.markdown(
+                    '🟢 **KEEP** — Hold as-is, no action needed  \n'
+                    '✂️ **TRIM** — Still a top target but overweight; sell a small portion to rebalance  \n'
+                    '🟠 **EXIT** — Trend weakening; full exit recommended  \n'
+                    '🔴 **STOP / SELL** — Stop loss triggered or Bear Market; exit immediately'
+                )
         else:
             st.info('No holdings found. Add them in Settings.')
 
@@ -165,23 +172,44 @@ with tab1:
         if data['regime'] == 'BEAR':
             st.error('🚨 SELL EVERYTHING - Market in BEAR Regime')
         else:
-            if data['to_sell']:
-                for item in data['to_sell']:
+            # Separate full exits from rebalance trims
+            full_sells = [s for s in data['to_sell'] if s.get('reason', '') not in ('Rebalance: trim overweight position', 'Rebalance: not a top target')]
+            trim_sells = [s for s in data['to_sell'] if s.get('reason', '') in ('Rebalance: trim overweight position', 'Rebalance: not a top target')]
+
+            if full_sells:
+                st.markdown('**🔴 EXIT ORDERS** *(full position close)*')
+                for item in full_sells:
                     qty = item.get('qty')
                     sell_label = f'SELL {qty:.4f} shares' if qty is not None else 'SELL'
-                    st.error(f'🔴 {sell_label} **{item["ticker"]}** ({item["reason"]})')
-                if data['buy_orders']:
-                    st.caption('Use the cash from your sells to fund the BUY orders below.')
+                    st.error(f'🔴 {sell_label} **{item["ticker"]}** — {item["reason"]}')
 
+            if trim_sells:
+                st.markdown('**✂️ REBALANCE TRIMS** *(partial sell to rebalance)*')
+                for item in trim_sells:
+                    qty = item.get('qty')
+                    trim_label = f'{qty:.4f} shares' if qty is not None else ''
+                    st.warning(f'✂️ TRIM **{item["ticker"]}**: sell {trim_label} to free up capital for buys below')
+
+            if (full_sells or trim_sells) and data['buy_orders']:
+                st.caption('➡️ Use proceeds from above to fund the BUY orders below.')
+
+            if data['buy_orders']:
+                st.markdown('**🟢 BUY ORDERS**')
             for item in data['buy_orders']:
-                label = 'New Entry' if item['type'] == 'NEW' else 'Add'
+                label = 'New Entry' if item['type'] == 'NEW' else 'Add to position'
                 st.success(f'🟢 BUY ({label}) **{item["ticker"]}**: ${item["amount"]:.2f} (~{item["shares"]:.4f} shares at ${item["price"]:.2f})')
 
+            if data['hold_orders']:
+                st.markdown('**🔵 HOLD**')
             for item in data['hold_orders']:
                 st.info(f'🔵 HOLD **{item["ticker"]}** (Val: ${item["value"]:.2f})')
 
+            if not full_sells and not trim_sells and not data['buy_orders'] and not data['hold_orders']:
+                st.success('✅ No trades needed this week. Portfolio is fully optimised.')
+
             if data.get('risk_tip'):
                 st.warning(f'⚠️ {data["risk_tip"]}')
+
 
 with tab2:
     st.subheader('🏆 Momentum Rankings')

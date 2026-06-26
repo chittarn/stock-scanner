@@ -85,8 +85,11 @@ class CLIScanner:
         port_table.add_column("Status", justify="center")
 
         for item in data['portfolio_items']:
-            status_style = "bold green" if item['status'] == "KEEP" else "bold red" if item['status'] in ["SELL", "STOP"] else "yellow"
-            status_display = f"[{status_style}]{item['status']}[/{status_style}]"
+            status_style = "bold green" if item['status'] == "KEEP" else "bold red" if item['status'] in ["SELL", "STOP"] else "bold yellow" if item['status'] == "TRIM" else "bold orange3" if item['status'] == "EXIT" else "yellow"
+            status_label = item['status']
+            if item['status'] == "TRIM":
+                status_label = "TRIM ✂"
+            status_display = f"[{status_style}]{status_label}[/{status_style}]"
             port_table.add_row(item['ticker'], f"${item['value']:.2f}", f"{item['pnl_pct']:+.1f}%", f"-{item['atr_stop_dist']:.1f}%", status_display)
         self.console.print(port_table)
 

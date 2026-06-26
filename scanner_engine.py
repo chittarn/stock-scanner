@@ -507,6 +507,15 @@ class ScannerEngine:
                         'value': curr_val
                     })
 
+        # Sync portfolio_items status with final to_sell list.
+        # If a rebalance trim was added after the initial status was set to KEEP,
+        # update the status to TRIM so the portfolio table matches the action plan.
+        to_sell_map = {s['ticker']: s for s in to_sell}
+        for item in portfolio_items:
+            if item['ticker'] in to_sell_map and item['status'] == 'KEEP':
+                item['status'] = 'TRIM'
+                item['reason'] = to_sell_map[item['ticker']].get('reason', 'Rebalance')
+
         return {
             "prices": prices,
             "atr": atr,

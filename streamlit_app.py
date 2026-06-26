@@ -116,6 +116,17 @@ with tab1:
             elif item.get('holding_age_days', 999) < engine.config.get('min_holding_days', 10):
                 protection = '🔒 Min Hold'
 
+            status = item['status']
+            reason = item.get('reason', '')
+            if status == 'TRIM':
+                status_display = f'✂️ TRIM ({reason})'
+            elif status in ('SELL', 'STOP'):
+                status_display = f'🔴 {status} ({reason})' if reason else f'🔴 {status}'
+            elif status == 'EXIT':
+                status_display = f'🟠 EXIT ({reason})'
+            else:
+                status_display = '🟢 KEEP'
+
             portfolio_items.append(
                 {
                     'Ticker': item['ticker'],
@@ -123,7 +134,7 @@ with tab1:
                     'P&L %': f'{item["pnl_pct"]:+.1f}%',
                     'Stop Loss (ATR)': f'-{item["atr_stop_dist"]:.1f}%',
                     'Age': f'{item.get("holding_age_days", "?")}d',
-                    'Status': item['status'],
+                    'Status': status_display,
                     'Protection': protection,
                 }
             )

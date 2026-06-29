@@ -34,14 +34,14 @@
     "rebalance_rank_buffer": 2,
     "my_holdings": {
         "QQQ": {
-            "qty": 0.27570251,
+            "qty": 0.24200251,
             "avg_cost": 741.42,
-            "entry_date": "2026-06-15"
+            "entry_date": "2026-06-30"
         },
         "CAT": {
-            "qty": 0.09277121,
-            "avg_cost": 874.30,
-            "entry_date": "2026-06-15"
+            "qty": 0.11614600,
+            "avg_cost": 906.88,
+            "entry_date": "2026-06-30"
         },
         "LLY": {
             "qty": 0.11882013,

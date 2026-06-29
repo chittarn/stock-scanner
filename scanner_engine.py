@@ -190,10 +190,21 @@ class ScannerEngine:
             "QQQ": "Index (Tech)", "NVDA": "Semiconductors", "AMZN": "Consumer Disc",
             "CAT": "Industrials", "BRK-B": "Financials", "XLF": "Financials",
             "JPM": "Financials", "XLV": "Healthcare", "LLY": "Healthcare",
-            "XLE": "Energy", "WMT": "Consumer Staples", "LMT": "Defense", 
+            "XLE": "Energy", "WMT": "Consumer Staples", "LMT": "Defense",
             "GLD": "Gold", "MSFT": "Software", "GOOGL": "Communication", "AMD": "Semiconductors",
             "SPY": "Index (Broad)", "TLT": "Bonds (Long-Term)"
         }
+
+        # --- #2: Pre-compute SPY benchmark returns for relative strength ---
+        spy_ret3m, spy_ret6m = 0.0, 0.0
+        if 'SPY' in prices.columns:
+            spy_px = prices['SPY'].dropna()
+            if len(spy_px) >= 10:
+                spy_curr = spy_px.iloc[-1]
+                spy_p3m  = spy_px.iloc[-min(63,  len(spy_px) - 1)]
+                spy_p6m  = spy_px.iloc[-min(126, len(spy_px) - 1)]
+                spy_ret3m = (spy_curr / spy_p3m - 1) * 100 if spy_p3m > 0 else 0.0
+                spy_ret6m = (spy_curr / spy_p6m - 1) * 100 if spy_p6m > 0 else 0.0
 
         scores = {}
         for t in self.config['universe']:
@@ -203,17 +214,24 @@ class ScannerEngine:
                     continue
 
                 curr = valid_prices.iloc[-1]
-                p3m = valid_prices.iloc[-min(63, len(valid_prices) - 1)]
+                p3m = valid_prices.iloc[-min(63,  len(valid_prices) - 1)]
                 p6m = valid_prices.iloc[-min(126, len(valid_prices) - 1)]
 
                 ret3m = (curr / p3m - 1) * 100 if p3m > 0 else 0
                 ret6m = (curr / p6m - 1) * 100 if p6m > 0 else 0
 
+                # #2: Relative returns vs SPY benchmark
+                rel_ret3m = ret3m - spy_ret3m
+                rel_ret6m = ret6m - spy_ret6m
+
                 returns = valid_prices.tail(60).pct_change().dropna()
                 vol = returns.std() * np.sqrt(252) if not returns.empty else 0.01
                 vol = max(vol, 0.01)
 
-                raw_score = (ret6m * w6) + (ret3m * w3)
+                # Score blends absolute (50%) + relative vs SPY (50%) for ranking
+                abs_raw   = (ret6m * w6) + (ret3m * w3)
+                rel_raw   = (rel_ret6m * w6) + (rel_ret3m * w3)
+                raw_score = (abs_raw * 0.5) + (rel_raw * 0.5)
                 score = raw_score / vol
 
                 ma_len = min(200, len(valid_prices))
@@ -233,6 +251,8 @@ class ScannerEngine:
                     'price': curr,
                     'ret3m': ret3m,
                     'ret6m': ret6m,
+                    'rel_ret3m': rel_ret3m,   # #2 relative strength
+                    'rel_ret6m': rel_ret6m,   # #2 relative strength
                     'momentum_ok': momentum_ok,
                     'exit_momentum_ok': exit_momentum_ok,
                     'above_ma200': above_ma200,
@@ -278,6 +298,9 @@ class ScannerEngine:
             used_sectors.add(sector)
             if len(top_targets) >= n_target:
                 break
+
+        # #7: Watch list — next eligible candidates just outside the top targets
+        watch_list = [t for t in eligible_candidates if t not in top_targets][:2]
 
         returns = prices.pct_change().dropna()
         corr_matrix = returns.tail(60).corr()
@@ -393,6 +416,7 @@ class ScannerEngine:
                 'cost': cost,
                 'pnl_pct': pnl_pct,
                 'atr_stop_dist': atr_stop_dist,
+                'stop_price': round(stop_price, 2),   # #6 actual stop price in $
                 'status': status,
                 'reason': reason,
                 'holding_age_days': holding_age,
@@ -507,6 +531,28 @@ class ScannerEngine:
                         'value': curr_val
                     })
 
+        # Strict Balancing: Ensure total buys don't exceed available cash + proceeds from sells
+        total_cash_generated = 0.0
+        for s in to_sell:
+            t = s['ticker']
+            curr_price = scores.get(t, {}).get('price', 0.0)
+            if curr_price == 0.0 and t in prices.columns and len(prices[t].dropna()) > 0:
+                curr_price = prices[t].dropna().iloc[-1]
+            total_cash_generated += s['qty'] * curr_price
+            
+        assumed_cash = max(0.0, self.config['initial_capital'] - total_cost)
+        available_funds = assumed_cash + total_cash_generated
+        total_buy_required = sum(b['amount'] for b in buy_orders)
+        
+        if total_buy_required > available_funds:
+            if available_funds <= 0.0:
+                buy_orders = []
+            else:
+                scale_factor = available_funds / total_buy_required
+                for b in buy_orders:
+                    b['amount'] *= scale_factor
+                    b['shares'] *= scale_factor
+
         # Sync portfolio_items status with final to_sell list.
         # If a rebalance trim was added after the initial status was set to KEEP,
         # update the status to TRIM so the portfolio table matches the action plan.
@@ -527,6 +573,7 @@ class ScannerEngine:
             "sorted_ranks": sorted_ranks,
             "n_target": n_target,
             "top_targets": top_targets,
+            "watch_list": watch_list,            # #7
             "eligible_candidates": eligible_candidates,
             "correlation_matrix": corr_matrix,
             "top_correlation": correlation,

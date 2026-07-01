@@ -26,7 +26,7 @@ st.markdown(
 )
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, ttl=900)
 def load_analysis(scan_date, config_json):
     engine = ScannerEngine()
     engine.config = json.loads(config_json)
@@ -57,6 +57,9 @@ engine = create_engine()
 selected_date = st.sidebar.date_input('Analysis Date', datetime.now().date())
 if selected_date.strftime('%A') != 'Sunday':
     st.sidebar.warning('Best used for Sunday weekly review. Select a Sunday for the intended process.')
+
+if st.sidebar.button('🔄 Refresh Data'):
+    st.cache_data.clear()
 
 config_json = json.dumps(engine.config, sort_keys=True)
 
